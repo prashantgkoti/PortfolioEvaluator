@@ -106,7 +106,7 @@ def evaluate_holding(row: pd.Series) -> dict:
     """Runs the recommendation engine's analysis for a single portfolio holding
     and returns a buy-more/hold/trim/exit verdict with reasoning. Gracefully
     skips assets with no live-feed analysis path (unlisted, gold, other)."""
-    if row["asset_type"] in ("unlisted_equity", "gold", "other"):
+    if row["asset_type"] in ("unlisted_equity", "gold", "other", "nps"):
         return {
             "verdict": "N/A",
             "reasoning": "No public market data exists for this asset type — "
@@ -158,7 +158,7 @@ def portfolio_benchmark_alpha(df: pd.DataFrame, period: str = "1y") -> dict:
         return {"portfolio_return": None, "benchmark_return": None, "alpha": None}
 
     for _, row in df.iterrows():
-        if row["value_inr"] is None or row["asset_type"] in ("unlisted_equity", "gold", "other"):
+        if row["value_inr"] is None or row["asset_type"] in ("unlisted_equity", "gold", "other", "nps"):
             continue
         idx_key = benchmark.determine_benchmark(row["asset_type"], row["market"], {}, row["name"] or "")
         weights[idx_key] = weights.get(idx_key, 0) + row["value_inr"] / total_value

@@ -220,17 +220,21 @@ def _parse_holdings_from_lines(lines: List[str]) -> List[dict]:
     return holdings
 
 
-def parse_cas_bytes(file_bytes: bytes) -> dict:
-    """Returns {"holdings": [...], "warnings": [...], "error": str|None}."""
+def _extract_text(file_bytes: bytes) -> Optional[str]:
+    """Runs pdfplumber's text extraction exactly once. This is the slow part
+    (~8s on an 18-page CAS) — callers should extract once via
+    parse_everything() and reuse the text, rather than each parser
+    independently re-opening and re-extracting the same PDF."""
     try:
         import io
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    except Exception as e:
-        return {"holdings": [], "warnings": [], "error": f"Could not open PDF: {e}. "
-                "If this CAS is password-protected, please remove the password first "
-                "(open it once in a PDF reader with your PAN-based password and re-save)."}
+            return "\n".join(page.extract_text() or "" for page in pdf.pages)
+    except Exception:
+        return None
 
+
+def _parse_holdings_from_text(full_text: str) -> dict:
+    """Returns {"holdings": [...], "warnings": [...], "error": str|None}."""
     if not full_text.strip():
         return {"holdings": [], "warnings": [], "error": "No extractable text found in this PDF "
                 "(it may be a scanned image). Automated parsing isn't supported for scanned CAS files."}
@@ -263,22 +267,24 @@ def parse_cas_bytes(file_bytes: bytes) -> dict:
     return {"holdings": holdings, "warnings": warnings, "error": None}
 
 
+def parse_cas_bytes(file_bytes: bytes) -> dict:
+    """Standalone entry point (extracts text itself) — kept for callers that
+    only need holdings. Prefer parse_everything() when you also need
+    trend/NPS data, to avoid re-extracting the same PDF three times."""
+    full_text = _extract_text(file_bytes)
+    if full_text is None:
+        return {"holdings": [], "warnings": [], "error": "Could not open this PDF. "
+                "If it's password-protected, remove the password first "
+                "(open it once in a PDF reader with your PAN-based password and re-save)."}
+    return _parse_holdings_from_text(full_text)
+
+
 TREND_LINE_RE = re.compile(
     r"^(?P<mon>JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+(?P<year>\d{4})\s+(?P<value>[\d,]+\.\d{2})"
 )
 
 
-def parse_trend_bytes(file_bytes: bytes) -> List[dict]:
-    """Extracts the CAS's own 'Monthly movement of your Consolidated Portfolio
-    Value' table (typically ~13 months) — free historical data NSDL already
-    includes, so the app can show a trend line immediately without needing
-    13 months of separate uploads to build one up."""
-    try:
-        import io
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    except Exception:
-        return []
+def _parse_trend_from_text(full_text: str) -> List[dict]:
     points = []
     for ln in full_text.splitlines():
         m = TREND_LINE_RE.match(ln.strip())
@@ -291,22 +297,21 @@ def parse_trend_bytes(file_bytes: bytes) -> List[dict]:
     return points
 
 
+def parse_trend_bytes(file_bytes: bytes) -> List[dict]:
+    """Extracts the CAS's own 'Monthly movement of your Consolidated Portfolio
+    Value' table (typically ~13 months). Standalone entry point — prefer
+    parse_everything() when also parsing holdings/NPS."""
+    full_text = _extract_text(file_bytes)
+    return _parse_trend_from_text(full_text) if full_text else []
+
+
 NPS_LINE_RE = re.compile(
     r"^(?P<tier>TIER\s+[I]+)\s+(?P<contribution>[\d,]+\.\d{2})\s+(?P<withdrawal>[\d,]+\.\d{2})\s+"
     r"(?P<value>[\d,]+\.\d{2})\s+(?P<gain>[\d,]+\.\d{2})\s+(?P<xirr>[\d.]+)\s*$"
 )
 
 
-def parse_nps_bytes(file_bytes: bytes) -> Optional[dict]:
-    """Extracts the NPS Tier I summary line (contribution, current value,
-    notional gain, XIRR) from the 'Your NPS account' table. Returns None if
-    the CAS has no NPS section — not every investor holds NPS."""
-    try:
-        import io
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    except Exception:
-        return None
+def _parse_nps_from_text(full_text: str) -> Optional[dict]:
     for ln in full_text.splitlines():
         m = NPS_LINE_RE.match(ln.strip())
         if m:
@@ -316,6 +321,35 @@ def parse_nps_bytes(file_bytes: bytes) -> Optional[dict]:
                 "gain": _to_float(m.group("gain")), "xirr": float(m.group("xirr")),
             }
     return None
+
+
+def parse_nps_bytes(file_bytes: bytes) -> Optional[dict]:
+    """Extracts the NPS Tier I summary line. Standalone entry point — prefer
+    parse_everything() when also parsing holdings/trend."""
+    full_text = _extract_text(file_bytes)
+    return _parse_nps_from_text(full_text) if full_text else None
+
+
+def parse_everything(file_bytes: bytes) -> dict:
+    """Extracts the PDF text exactly once and runs all three parsers against
+    it — holdings, the trend table, and NPS. This is what the API's upload
+    endpoint should call; it's ~3x faster than calling the three standalone
+    functions separately, since pdfplumber extraction (~8s on an 18-page
+    CAS) was previously being repeated once per parser.
+    Returns {"holdings": [...], "warnings": [...], "error": str|None,
+             "trend_points": [...], "nps": dict|None}."""
+    full_text = _extract_text(file_bytes)
+    if full_text is None:
+        return {"holdings": [], "warnings": [], "trend_points": [], "nps": None,
+                "error": "Could not open this PDF. If it's password-protected, remove the "
+                         "password first (open it once in a PDF reader with your PAN-based "
+                         "password and re-save)."}
+    holdings_result = _parse_holdings_from_text(full_text)
+    return {
+        **holdings_result,
+        "trend_points": _parse_trend_from_text(full_text),
+        "nps": _parse_nps_from_text(full_text),
+    }
 
 
 def new_batch_id() -> str:

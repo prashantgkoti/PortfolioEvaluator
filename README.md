@@ -21,6 +21,7 @@ your own CAS, refresh live prices, run scored verdicts, add manual holdings
 | Benchmark comparison | Not available | Live, via `/api/benchmark` |
 | Persistence | None | SQLite, survives restarts |
 | Add US/unlisted/gold holdings | Not available | Full forms, live |
+| Equity cost basis | Never available (CAS doesn't carry it) | Real, FIFO-computed from an uploaded tradebook |
 
 ## Setup
 
@@ -43,20 +44,33 @@ the dashboard from one process.
 
 ## Using it
 
-1. On first load, you'll see an upload prompt — drop in your NSDL CAS PDF.
+1. On first load, you'll see an upload prompt — drop in your NSDL CAS PDF, a Zerodha
+   tradebook .xlsx, or a **.zip bundling any mix of both** (e.g. one CAS plus several years
+   of tradebooks — Zerodha caps a single tradebook export at 365 days, so multi-year history
+   usually arrives as several files). The upload box stays visible after your first upload too
+   — add more files any time, they accumulate rather than replace what's already there.
 2. The dashboard populates from the parsed data: allocation, equity
    holdings, mutual fund folios (with real cost basis where available),
    and the CAS's own 13-month value trend.
-3. **Observations** tab — concentration, small-position, and mutual-fund
+3. **Tradebook uploads compute real, FIFO-exact cost basis** for equities — something CAS
+   alone can never provide — and apply it automatically to matching holdings by ISIN. If the
+   uploaded trade history doesn't fully cover a position's current quantity (e.g. only one
+   year of a multi-year holding), the response flags that explicitly rather than presenting
+   an approximation as precise.
+4. **Observations** tab — concentration, small-position, and mutual-fund
    overlap analysis, computed fresh from your actual holdings each time.
-4. **Verdicts** tab — click "Run verdicts" to score every holding with a
+5. **Verdicts** tab — click "Run verdicts" to score every holding with a
    resolvable ticker against the fundamental+technical engine, live.
-5. **Growth Projection** — sliders recompute the SIP math live via the API.
-6. **Add Holdings** — US trades, unlisted shares, gold, or other assets.
-7. **Manage Uploads** — delete a batch to remove those holdings.
+6. **Tradebook** tab — view FIFO-computed positions (open and closed) across every
+   tradebook transaction uploaded so far, including realized P&L on fully-exited positions.
+7. **Growth Projection** — sliders recompute the SIP math live via the API.
+8. **Add Holdings** — US trades, unlisted shares, gold, or other assets.
+9. **Manage Uploads** — delete a batch to remove those holdings.
 
 Re-uploading a CAS adds a new batch rather than replacing the old one —
-delete the old batch first from **Manage Uploads** if you want a clean swap.
+delete the old batch first from **Manage Uploads** if you want a clean swap. Re-uploading
+the same tradebook is safe and won't double-count: trades are deduplicated by their broker
+Trade ID.
 
 ## API reference
 
@@ -64,7 +78,10 @@ All endpoints are under `/api/`. A few highlights:
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/cas/upload` | POST (multipart) | Parse a CAS PDF, save holdings + trend + NPS |
+| `/api/upload` | POST (multipart) | Unified entry point — a CAS PDF, a tradebook .xlsx, or a .zip bundling any mix of both |
+| `/api/cas/upload` | POST (multipart) | Single-CAS convenience endpoint (same underlying logic as `/api/upload`) |
+| `/api/tradebook/upload` | POST (multipart) | Single-tradebook convenience endpoint, returns FIFO cost-basis reconciliation detail |
+| `/api/tradebook/positions` | GET | FIFO-computed positions (open + closed) across every uploaded trade |
 | `/api/portfolio` | GET | Full holdings + totals + allocation |
 | `/api/portfolio/refresh` | POST | Same, with live price refresh |
 | `/api/portfolio/verdicts` | GET | Live scored buy/hold/trim/exit per holding |

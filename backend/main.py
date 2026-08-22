@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from .modules import (
     db, cas_parser, portfolio, recommendation, projection,
-    benchmark, manual_assets, observations, formatting,
+    benchmark, manual_assets, observations, formatting, tradebook_parser, upload_dispatch,
 )
 
 app = FastAPI(title="Portfolio Snapshot API")
@@ -102,34 +102,39 @@ def _holdings_dataframe(refresh: bool = False):
 
 
 # --------------------------------------------------------------------------- #
-# CAS upload
+# Unified upload — single CAS PDF, single tradebook XLSX, or a .zip of either
+# --------------------------------------------------------------------------- #
+
+@app.post("/api/upload")
+async def upload_any(file: UploadFile = File(...)):
+    """Accepts a single CAS PDF, a single tradebook XLSX, or a .zip file
+    bundling any mix of both — one CAS plus several years of tradebooks,
+    for example. Each file inside is parsed and ingested independently;
+    cost-basis reconciliation (FIFO from tradebooks -> CAS holdings) runs
+    once at the end, across everything just added."""
+    file_bytes = await file.read()
+    result = upload_dispatch.process_upload(file.filename, file_bytes)
+    if result["summary"].get("error"):
+        raise HTTPException(400, result["summary"]["error"])
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# CAS upload (single-file convenience endpoint — /api/upload also accepts this)
 # --------------------------------------------------------------------------- #
 
 @app.post("/api/cas/upload")
 async def upload_cas(file: UploadFile = File(...)):
     file_bytes = await file.read()
-    result = cas_parser.parse_cas_bytes(file_bytes)
-    if result["error"]:
+    result = upload_dispatch.process_cas(file.filename, file_bytes)
+    if not result["ok"]:
         raise HTTPException(400, result["error"])
-
-    batch_id = cas_parser.new_batch_id()
-    if result["holdings"]:
-        db.save_holdings(result["holdings"], source="cas", batch_id=batch_id, label=file.filename)
-
-    trend_points = cas_parser.parse_trend_bytes(file_bytes)
-    if trend_points:
-        db.save_trend_points(trend_points, batch_id=batch_id)
-
-    nps = cas_parser.parse_nps_bytes(file_bytes)
-    if nps:
-        db.save_nps_snapshot(nps, batch_id=batch_id)
-
     return {
-        "batch_id": batch_id,
-        "holdings_count": len(result["holdings"]),
+        "batch_id": result["batch_id"],
+        "holdings_count": result["holdings_count"],
         "warnings": result["warnings"],
-        "trend_points_found": len(trend_points),
-        "nps_found": nps is not None,
+        "trend_points_found": result["trend_points_found"],
+        "nps_found": result["nps_found"],
     }
 
 
@@ -200,6 +205,42 @@ def get_trend():
 @app.get("/api/nps")
 def get_nps():
     return db.get_latest_nps() or {}
+
+
+# --------------------------------------------------------------------------- #
+# Tradebook (FIFO cost basis from actual trade history)
+# --------------------------------------------------------------------------- #
+
+@app.post("/api/tradebook/upload")
+async def upload_tradebook(file: UploadFile = File(...)):
+    file_bytes = await file.read()
+    result = upload_dispatch.process_tradebook(file.filename, file_bytes)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+
+    cost_basis = upload_dispatch.reconcile_cost_basis()
+
+    return {
+        "batch_id": result["batch_id"],
+        "client_id": result["client_id"],
+        "title": result["title"],
+        "transactions_found": result["transactions_found"],
+        "transactions_inserted": result["transactions_inserted"],
+        "transactions_skipped_duplicate": result["transactions_skipped_duplicate"],
+        "holdings_cost_basis_updated": cost_basis["holdings_cost_basis_updated"],
+        "partial_coverage": cost_basis["partial_coverage"],
+        "warnings": result["warnings"] + cost_basis["warnings"],
+    }
+
+
+@app.get("/api/tradebook/positions")
+def get_tradebook_positions():
+    """FIFO-computed positions (open and closed) across every tradebook
+    transaction uploaded so far — useful even beyond cost-basis updates, e.g.
+    to see realized P&L on fully-exited positions."""
+    all_txns = db.get_all_transactions()
+    positions = tradebook_parser.compute_fifo_positions(all_txns)
+    return {"positions": sorted(positions.values(), key=lambda p: p["symbol"])}
 
 
 @app.get("/api/observations")

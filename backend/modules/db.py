@@ -129,6 +129,30 @@ class NPSSnapshot(Base):
     created_at = Column(DateTime, default=dt.datetime.utcnow)
 
 
+class Transaction(Base):
+    """Individual buy/sell trades from a broker tradebook export (e.g.
+    Zerodha Console). Kept persistently across every upload — not scoped to
+    one batch — because FIFO cost-basis calculations need the full trade
+    history, and brokers cap a single export at 365 days, so multi-year
+    history arrives as several separate uploads over time."""
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_id = Column(String, index=True)
+    source = Column(String)       # "zerodha_tradebook"
+    symbol = Column(String)
+    isin = Column(String, index=True)
+    trade_date = Column(String)   # ISO date string, e.g. "2020-02-11"
+    exchange = Column(String)
+    segment = Column(String)
+    trade_type = Column(String)   # "buy" | "sell"
+    quantity = Column(Float)
+    price = Column(Float)
+    trade_id = Column(String, index=True)
+    order_id = Column(String)
+    executed_at = Column(String)
+
+
 def init_db():
     Base.metadata.create_all(engine)
 
@@ -318,5 +342,60 @@ def get_latest_nps() -> Optional[dict]:
             return None
         return {"tier": row.tier, "contribution": row.contribution, "withdrawal": row.withdrawal,
                 "value": row.value, "gain": row.gain, "xirr": row.xirr}
+    finally:
+        session.close()
+
+
+# --------------------------------------------------------------------------- #
+# Transaction (tradebook) helpers
+# --------------------------------------------------------------------------- #
+
+def save_transactions(transactions: list, batch_id: str, source: str = "zerodha_tradebook") -> int:
+    """Inserts transactions, skipping any whose Trade ID already exists in the
+    DB (covers re-uploading the same file, or overlapping date ranges across
+    separate exports). Returns the count actually inserted."""
+    session = get_session()
+    try:
+        existing_ids = {row[0] for row in session.query(Transaction.trade_id).filter(
+            Transaction.trade_id.isnot(None)).all()}
+        inserted = 0
+        for t in transactions:
+            tid = t.get("trade_id")
+            if tid and tid in existing_ids:
+                continue
+            session.add(Transaction(batch_id=batch_id, source=source, **t))
+            if tid:
+                existing_ids.add(tid)
+            inserted += 1
+        session.commit()
+        return inserted
+    finally:
+        session.close()
+
+
+def get_all_transactions() -> list:
+    session = get_session()
+    try:
+        rows = session.query(Transaction).order_by(Transaction.trade_date, Transaction.executed_at).all()
+        return [{"symbol": r.symbol, "isin": r.isin, "trade_date": r.trade_date,
+                 "trade_type": r.trade_type, "quantity": r.quantity, "price": r.price,
+                 "exchange": r.exchange, "executed_at": r.executed_at} for r in rows]
+    finally:
+        session.close()
+
+
+def update_holding_cost_basis(isin: str, avg_cost: float) -> int:
+    """Overwrites avg_cost for every holding matching this ISIN — there may be
+    several rows across different demat accounts/CAS uploads. Returns the
+    count updated. Matches purely by ISIN (not asset_type), since an ETF
+    traded via a broker can land as asset_type='mutual_fund' from CAS
+    parsing (AMFI-style "INF" ISIN prefix) despite being traded like a stock."""
+    session = get_session()
+    try:
+        rows = session.query(PortfolioHolding).filter(PortfolioHolding.isin == isin).all()
+        for r in rows:
+            r.avg_cost = avg_cost
+        session.commit()
+        return len(rows)
     finally:
         session.close()

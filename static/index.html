@@ -23,16 +23,22 @@
 
 <div class="wrap">
 
-  <!-- ============ EMPTY STATE / UPLOAD ============ -->
+  <!-- ============ UPLOAD (always visible, not just when empty) ============ -->
   <div class="card" id="uploadCard" style="margin-top:-28px;">
-    <h3>Upload your NSDL CAS</h3>
-    <div class="card-sub">PDF from NSDL — parsed live by the backend, nothing hardcoded. Data stays in a local SQLite file on this machine.</div>
+    <h3 id="uploadCardTitle">Upload your statements</h3>
+    <div class="card-sub">
+      A CAS PDF, a tradebook .xlsx, or a .zip bundling any mix of both (e.g. one CAS plus
+      several years of tradebooks — brokers cap a single tradebook export at 365 days).
+      Parsed live by the backend, nothing hardcoded. Data stays in a local SQLite file on
+      this machine. Uploading more files adds to what's already stored — it doesn't replace it.
+    </div>
     <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-      <input type="file" id="casFile" accept="application/pdf">
+      <input type="file" id="casFile" accept=".pdf,.xlsx,.zip">
       <button class="btn-primary" id="uploadBtn">Upload &amp; parse</button>
       <span id="uploadStatus" style="font-size:0.82rem; color:var(--ink-soft);"></span>
     </div>
     <div id="uploadWarnings"></div>
+    <div id="uploadFileResults"></div>
   </div>
 
   <!-- ============ KPI ROW ============ -->
@@ -65,6 +71,7 @@
     <button class="tab-btn" data-tab="mf">Mutual Funds</button>
     <button class="tab-btn" data-tab="observations">Observations</button>
     <button class="tab-btn" data-tab="verdicts">Verdicts</button>
+    <button class="tab-btn" data-tab="tradebook">Tradebook</button>
     <button class="tab-btn" data-tab="projection">Growth Projection</button>
     <button class="tab-btn" data-tab="add">Add Holdings</button>
     <button class="tab-btn" data-tab="manage">Manage Uploads</button>
@@ -100,7 +107,7 @@
       <h3>Direct Equity Holdings</h3>
       <div class="card-sub" id="equitySub"></div>
       <table>
-        <thead><tr><th>Stock</th><th>Symbol</th><th class="num">Qty</th><th class="num">Price (₹)</th><th class="num">Value (₹)</th><th class="num">% of equity</th></tr></thead>
+        <thead><tr><th>Stock</th><th>Symbol</th><th class="num">Qty</th><th class="num">Price (₹)</th><th class="num">Value (₹)</th><th class="num">% of equity</th><th class="num">Cost (₹)</th><th class="num">Gain (₹)</th></tr></thead>
         <tbody id="equityBody"></tbody>
       </table>
     </div>
@@ -158,6 +165,29 @@
       <div class="card-sub">Runs the fundamental + technical scoring engine against every holding with a resolvable ticker, live, right now. Can take a minute for a large portfolio.</div>
       <button class="btn-primary" id="runVerdictsBtn">Run verdicts on all holdings</button>
       <div id="verdictsList" style="margin-top:16px;"></div>
+    </div>
+  </div>
+
+  <!-- ================= TRADEBOOK ================= -->
+  <div class="panel" id="tradebook">
+    <div class="card">
+      <h3>Real cost basis from trade history</h3>
+      <div class="card-sub">
+        NSDL/CDSL CAS statements never carry purchase cost for demat equities — only current
+        value. A broker tradebook is the actual trade-by-trade record, so FIFO cost basis
+        computed from it is exact for whatever period you upload. Currently supports
+        <b>Zerodha Console</b> tradebook exports (.xlsx). Upload one from the box at the top
+        of the page (a single file, or a .zip with several years bundled together — Zerodha
+        caps a single export at 365 days, so multi-year history needs multiple files).
+      </div>
+    </div>
+    <div class="card">
+      <h3>FIFO positions from uploaded trade history</h3>
+      <div class="card-sub">Open positions show computed cost basis; fully-exited positions show realized P&amp;L instead.</div>
+      <table>
+        <thead><tr><th>Symbol</th><th class="num">Qty (from history)</th><th class="num">Avg cost (₹)</th><th class="num">Realized P&amp;L (₹)</th></tr></thead>
+        <tbody id="tradebookPositionsBody"></tbody>
+      </table>
     </div>
   </div>
 
