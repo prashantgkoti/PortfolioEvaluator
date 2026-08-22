@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+sqlalchemy>=2.0.0
+yfinance>=0.2.40
+mftool>=1.10
+pandas>=2.0.0
+numpy>=1.24.0
+pdfplumber>=0.11.0

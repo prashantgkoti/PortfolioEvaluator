@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portfolio Snapshot</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div class="header">
+  <div class="wrap" style="padding:0; display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:10px;">
+    <div>
+      <h1 id="headerName">Portfolio Snapshot</h1>
+      <p id="headerSub">Upload a CAS to get started — everything below is computed live.</p>
+    </div>
+    <div id="headerActions" style="display:none;">
+      <button class="btn-ghost" id="refreshBtn">↻ Refresh live prices</button>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <!-- ============ EMPTY STATE / UPLOAD ============ -->
+  <div class="card" id="uploadCard" style="margin-top:-28px;">
+    <h3>Upload your NSDL CAS</h3>
+    <div class="card-sub">PDF from NSDL — parsed live by the backend, nothing hardcoded. Data stays in a local SQLite file on this machine.</div>
+    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+      <input type="file" id="casFile" accept="application/pdf">
+      <button class="btn-primary" id="uploadBtn">Upload &amp; parse</button>
+      <span id="uploadStatus" style="font-size:0.82rem; color:var(--ink-soft);"></span>
+    </div>
+    <div id="uploadWarnings"></div>
+  </div>
+
+  <!-- ============ KPI ROW ============ -->
+  <div class="kpi-row" id="kpiRow" style="display:none;">
+    <div class="kpi">
+      <div class="label">Consolidated Value</div>
+      <div class="value" id="kpiValue">—</div>
+      <div class="sub" id="kpiValueSub"></div>
+    </div>
+    <div class="kpi">
+      <div class="label">12-Month Growth</div>
+      <div class="value" id="kpiGrowth">—</div>
+      <div class="sub" id="kpiGrowthSub"></div>
+    </div>
+    <div class="kpi">
+      <div class="label">Direct Equity + MF</div>
+      <div class="value" id="kpiEquityMf">—</div>
+      <div class="sub" id="kpiEquityMfSub"></div>
+    </div>
+    <div class="kpi">
+      <div class="label">Total Unrealised Gain</div>
+      <div class="value" id="kpiGain">—</div>
+      <div class="sub" id="kpiGainSub"></div>
+    </div>
+  </div>
+
+  <div class="tabs" id="tabs" style="display:none;">
+    <button class="tab-btn active" data-tab="allocation">Allocation</button>
+    <button class="tab-btn" data-tab="equity">Equity Holdings</button>
+    <button class="tab-btn" data-tab="mf">Mutual Funds</button>
+    <button class="tab-btn" data-tab="observations">Observations</button>
+    <button class="tab-btn" data-tab="verdicts">Verdicts</button>
+    <button class="tab-btn" data-tab="projection">Growth Projection</button>
+    <button class="tab-btn" data-tab="add">Add Holdings</button>
+    <button class="tab-btn" data-tab="manage">Manage Uploads</button>
+  </div>
+
+  <!-- ================= ALLOCATION ================= -->
+  <div class="panel active" id="allocation">
+    <div class="grid-2">
+      <div class="card">
+        <h3>Asset Class Split</h3>
+        <div class="card-sub" id="allocSub"></div>
+        <div class="chart-box"><canvas id="donutChart"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Portfolio Value Trend</h3>
+        <div class="card-sub" id="trendSub">From the CAS's own monthly history table, when available</div>
+        <div class="chart-box"><canvas id="trendChart"></canvas></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Where each rupee sits</h3>
+      <div class="card-sub">Grouped by upload source / broker</div>
+      <table>
+        <thead><tr><th>Source</th><th class="num">Value (₹)</th><th class="num">% of portfolio</th></tr></thead>
+        <tbody id="rupeeBucketBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ================= EQUITY ================= -->
+  <div class="panel" id="equity">
+    <div class="card">
+      <h3>Direct Equity Holdings</h3>
+      <div class="card-sub" id="equitySub"></div>
+      <table>
+        <thead><tr><th>Stock</th><th>Symbol</th><th class="num">Qty</th><th class="num">Price (₹)</th><th class="num">Value (₹)</th><th class="num">% of equity</th></tr></thead>
+        <tbody id="equityBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ================= MUTUAL FUNDS ================= -->
+  <div class="panel" id="mf">
+    <div class="card">
+      <h3>Mutual Fund Folios</h3>
+      <div class="card-sub" id="mfSub"></div>
+      <div class="chart-box tall"><canvas id="mfBarChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Folio-level detail</h3>
+      <table>
+        <thead><tr><th>Scheme</th><th class="num">Cost (₹)</th><th class="num">Value (₹)</th><th class="num">Gain (₹)</th><th class="num">Gain %</th></tr></thead>
+        <tbody id="mfBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ================= OBSERVATIONS ================= -->
+  <div class="panel" id="observations">
+    <div class="disclaimer">
+      <b>Not investment advice.</b> Automated pattern analysis of your actual holdings —
+      concentration, overlap, position sizing — computed fresh on every request. Not a licensed
+      recommendation, and not based on any prior session (this app has no memory of past reviews).
+    </div>
+    <div class="card">
+      <h3>Concentration &amp; position sizing</h3>
+      <div class="stat-strip" id="obsStrip"></div>
+      <p id="obsProse" style="font-size:0.85rem; color:var(--ink-soft); line-height:1.6;"></p>
+    </div>
+    <div class="two-col-cards">
+      <div class="card">
+        <h3>Sector tilt (direct equity)</h3>
+        <div class="card-sub">Heuristic tagging of your actual holdings — not a pre-set framework</div>
+        <table>
+          <thead><tr><th>Theme</th><th>Names held</th><th class="num">Value (₹)</th></tr></thead>
+          <tbody id="sectorBody"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Mutual fund category overlap</h3>
+        <div class="card-sub">Same category, different AMC — a tidiness note</div>
+        <div id="overlapList" style="font-size:0.84rem; line-height:1.9;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= VERDICTS ================= -->
+  <div class="panel" id="verdicts">
+    <div class="card">
+      <h3>Live Buy / Hold / Trim / Exit verdicts</h3>
+      <div class="card-sub">Runs the fundamental + technical scoring engine against every holding with a resolvable ticker, live, right now. Can take a minute for a large portfolio.</div>
+      <button class="btn-primary" id="runVerdictsBtn">Run verdicts on all holdings</button>
+      <div id="verdictsList" style="margin-top:16px;"></div>
+    </div>
+  </div>
+
+  <!-- ================= PROJECTION ================= -->
+  <div class="panel" id="projection">
+    <div class="card">
+      <h3>Project your future corpus</h3>
+      <div class="card-sub">Seeded live from your current consolidated value. Same SIP-compounding math as the API's <code>/api/projection</code> endpoint.</div>
+      <div class="slider-row">
+        <div class="slider-field">
+          <label>Monthly SIP (₹) — <span class="val" id="sipVal">25,000</span></label>
+          <input type="range" id="sipSlider" min="0" max="150000" step="1000" value="25000">
+        </div>
+        <div class="slider-field">
+          <label>Expected annual return (%) — <span class="val" id="retVal">12.0</span></label>
+          <input type="range" id="retSlider" min="4" max="20" step="0.5" value="12">
+        </div>
+        <div class="slider-field">
+          <label>Horizon (years) — <span class="val" id="yrsVal">15</span></label>
+          <input type="range" id="yrsSlider" min="1" max="30" step="1" value="15">
+        </div>
+      </div>
+      <div class="stat-strip">
+        <div class="stat-chip"><div class="n" id="projInvested">—</div><div class="l">total invested</div></div>
+        <div class="stat-chip"><div class="n" id="projCorpus" style="color:var(--navy-2);">—</div><div class="l">projected corpus</div></div>
+        <div class="stat-chip"><div class="n" id="projGains" style="color:var(--green);">—</div><div class="l">projected gains</div></div>
+      </div>
+      <div class="chart-box tall"><canvas id="projChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ================= ADD HOLDINGS ================= -->
+  <div class="panel" id="add">
+    <div class="two-col-cards">
+      <div class="card">
+        <h3>🇺🇸 US market trade</h3>
+        <div class="field-row"><input id="usSymbol" placeholder="Ticker (e.g. AAPL)"></div>
+        <div class="field-row"><input id="usName" placeholder="Display name (optional)"></div>
+        <div class="field-row two">
+          <input id="usQty" type="number" placeholder="Quantity" step="0.0001">
+          <input id="usCost" type="number" placeholder="Avg cost (USD)" step="0.01">
+        </div>
+        <button class="btn-primary" onclick="addUS()">Add US holding</button>
+        <div class="form-status" id="usStatus"></div>
+      </div>
+      <div class="card">
+        <h3>🏢 Unlisted / private shares</h3>
+        <div class="field-row"><input id="ulName" placeholder="Company name"></div>
+        <div class="field-row two">
+          <input id="ulQty" type="number" placeholder="Number of shares" step="1">
+          <input id="ulCost" type="number" placeholder="Cost per share (₹)" step="0.01">
+        </div>
+        <div class="field-row"><input id="ulCurrent" type="number" placeholder="Estimated current price (₹, optional)" step="0.01"></div>
+        <button class="btn-primary" onclick="addUnlisted()">Add unlisted holding</button>
+        <div class="form-status" id="ulStatus"></div>
+      </div>
+      <div class="card">
+        <h3>🥇 Gold</h3>
+        <div class="field-row two">
+          <input id="goldGrams" type="number" placeholder="Grams" step="0.1">
+          <input id="goldCost" type="number" placeholder="Avg cost/gram (₹)" step="1">
+        </div>
+        <div class="field-row"><input id="goldCurrent" type="number" placeholder="Today's price/gram (₹)" step="1"></div>
+        <button class="btn-primary" onclick="addGold()">Add gold holding</button>
+        <div class="form-status" id="goldStatus"></div>
+      </div>
+      <div class="card">
+        <h3>📦 Other asset</h3>
+        <div class="field-row"><input id="otherName" placeholder="Asset name"></div>
+        <div class="field-row two">
+          <input id="otherType" placeholder="Type label (e.g. bond, REIT)">
+          <input id="otherValue" type="number" placeholder="Current value (₹)" step="1">
+        </div>
+        <button class="btn-primary" onclick="addOther()">Add other asset</button>
+        <div class="form-status" id="otherStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= MANAGE ================= -->
+  <div class="panel" id="manage">
+    <div class="card">
+      <h3>Uploaded batches</h3>
+      <div class="card-sub">Delete a batch to remove those holdings from the portfolio</div>
+      <table>
+        <thead><tr><th>Label</th><th>Source</th><th>Uploaded</th><th></th></tr></thead>
+        <tbody id="batchBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<footer>Live FastAPI backend · Not investment advice · Data stored locally</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
