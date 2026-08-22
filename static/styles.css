@@ -16,11 +16,15 @@ body{
 }
 .header{
   background:linear-gradient(120deg,var(--navy-1),var(--navy-2) 60%,var(--navy-3));
-  color:#fff; padding:28px 40px 34px;
+  color:#fff;
 }
 .header h1{margin:0 0 6px; font-size:1.65rem; font-weight:700; letter-spacing:-0.01em;}
 .header p{margin:0; font-size:0.88rem; color:#c9d6ea; font-weight:400;}
 .wrap{max-width:1240px; margin:0 auto; padding:0 40px;}
+.header-inner{
+  padding-top:28px; padding-bottom:34px;
+  display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:10px;
+}
 .kpi-row{display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-top:20px; margin-bottom:26px;}
 .kpi{background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px; box-shadow:0 6px 18px rgba(15,42,82,0.08);}
 .kpi .label{font-size:0.68rem; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-faint); font-weight:600;}

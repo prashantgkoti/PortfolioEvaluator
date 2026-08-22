@@ -29,8 +29,14 @@ function fmtTick(n){
   return sign + fmtINR(v);
 }
 
-Chart.defaults.font.family = "-apple-system,'Segoe UI',sans-serif";
-Chart.defaults.color = '#5b6b85';
+const CHARTS_AVAILABLE = typeof Chart !== 'undefined';
+if (CHARTS_AVAILABLE) {
+  Chart.defaults.font.family = "-apple-system,'Segoe UI',sans-serif";
+  Chart.defaults.color = '#5b6b85';
+} else {
+  console.error('Chart.js failed to load from the CDN — charts will be skipped. ' +
+    'Check your network/firewall access to cdnjs.cloudflare.com.');
+}
 
 // ============================================================================
 // State
@@ -204,6 +210,7 @@ function renderDonut(assetClass){
   const palette = {'stock':'#2e5fa8','mutual_fund':'#1a9169','gold':'#c98a2c','unlisted_equity':'#6a4c93','other':'#b23a48'};
   const total = assetClass.reduce((s,a)=>s+a.value,0);
   document.getElementById('allocSub').textContent = `${fmtCompact(total)} across all uploaded and added holdings`;
+  if(!CHARTS_AVAILABLE) return;
   const ctx = document.getElementById('donutChart');
   if(charts.donut) charts.donut.destroy();
   charts.donut = new Chart(ctx, {
@@ -223,6 +230,7 @@ function renderDonut(assetClass){
 }
 
 function renderTrend(points){
+  if(!CHARTS_AVAILABLE) return;
   const ctx = document.getElementById('trendChart');
   if(charts.trend) charts.trend.destroy();
   charts.trend = new Chart(ctx, {
@@ -275,6 +283,7 @@ function renderMF(holdings){
       <td class="num ${cls}">${gain>=0?'+':''}${indianGrouped(gain)}</td><td class="num ${cls}">${gain>=0?'+':''}${pct}%</td></tr>`;
   }).join('');
 
+  if(!CHARTS_AVAILABLE) return;
   const ctx = document.getElementById('mfBarChart');
   if(charts.mfBar) charts.mfBar.destroy();
   charts.mfBar = new Chart(ctx, {
@@ -341,6 +350,7 @@ async function runProjection(){
   document.getElementById('projCorpus').textContent = fmtCompact(data.final.corpus);
   document.getElementById('projGains').textContent = fmtCompact(data.final.gains);
 
+  if(!CHARTS_AVAILABLE) return;
   const ctx = document.getElementById('projChart');
   if(charts.proj) charts.proj.destroy();
   charts.proj = new Chart(ctx, {
