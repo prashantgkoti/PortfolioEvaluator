@@ -70,8 +70,45 @@ async function init(){
     });
   });
   ['sipSlider','retSlider','yrsSlider'].forEach(id=>document.getElementById(id).addEventListener('input', runProjection));
+  document.getElementById('llmToggle').addEventListener('change', handleLlmToggle);
 
   await loadPortfolio(false);
+  await loadSettings();
+}
+
+// ============================================================================
+// AI-assisted parsing settings
+// ============================================================================
+async function loadSettings(){
+  const s = await api('/api/settings');
+  const toggle = document.getElementById('llmToggle');
+  const note = document.getElementById('llmStatusNote');
+  toggle.checked = s.llm_parsing_enabled;
+  if(!s.llm_available){
+    toggle.disabled = true;
+    note.textContent = 'Not available: ANTHROPIC_API_KEY isn\'t set on this machine (or the "anthropic" package isn\'t installed). Set the environment variable and restart the server to enable this.';
+  } else if(s.llm_parsing_enabled){
+    toggle.disabled = false;
+    note.textContent = 'Enabled — unrecognized files will be sent to Anthropic\'s API for extraction.';
+  } else {
+    toggle.disabled = false;
+    note.textContent = 'API key detected. Currently disabled — unrecognized files are skipped rather than sent anywhere.';
+  }
+}
+
+async function handleLlmToggle(){
+  const toggle = document.getElementById('llmToggle');
+  const statusEl = document.getElementById('llmToggleStatus');
+  try{
+    await api('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({llm_parsing_enabled: toggle.checked})});
+    statusEl.textContent = '';
+    await loadSettings();
+  }catch(e){
+    toggle.checked = !toggle.checked;
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'form-status err';
+  }
 }
 
 async function handleUpload(){

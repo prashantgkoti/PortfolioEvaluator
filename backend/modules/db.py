@@ -139,7 +139,7 @@ class Transaction(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     batch_id = Column(String, index=True)
-    source = Column(String)       # "zerodha_tradebook"
+    source = Column(String)       # "zerodha_tradebook" | "llm_extracted"
     symbol = Column(String)
     isin = Column(String, index=True)
     trade_date = Column(String)   # ISO date string, e.g. "2020-02-11"
@@ -151,6 +151,17 @@ class Transaction(Base):
     trade_id = Column(String, index=True)
     order_id = Column(String)
     executed_at = Column(String)
+
+
+class AppSettings(Base):
+    """Single-row table of app-wide toggles. LLM-assisted parsing defaults
+    to OFF: enabling it means extracted text from files the deterministic
+    parsers can't handle gets sent to an external LLM API, which is a
+    meaningful privacy trade-off the person must opt into explicitly."""
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    llm_parsing_enabled = Column(Boolean, default=False)
 
 
 def init_db():
@@ -397,5 +408,36 @@ def update_holding_cost_basis(isin: str, avg_cost: float) -> int:
             r.avg_cost = avg_cost
         session.commit()
         return len(rows)
+    finally:
+        session.close()
+
+
+# --------------------------------------------------------------------------- #
+# Settings helpers
+# --------------------------------------------------------------------------- #
+
+def get_settings() -> dict:
+    session = get_session()
+    try:
+        row = session.query(AppSettings).first()
+        if not row:
+            row = AppSettings(llm_parsing_enabled=False)
+            session.add(row)
+            session.commit()
+        return {"llm_parsing_enabled": bool(row.llm_parsing_enabled)}
+    finally:
+        session.close()
+
+
+def set_llm_parsing_enabled(enabled: bool) -> dict:
+    session = get_session()
+    try:
+        row = session.query(AppSettings).first()
+        if not row:
+            row = AppSettings()
+            session.add(row)
+        row.llm_parsing_enabled = enabled
+        session.commit()
+        return {"llm_parsing_enabled": bool(row.llm_parsing_enabled)}
     finally:
         session.close()

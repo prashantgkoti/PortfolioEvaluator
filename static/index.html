@@ -270,6 +270,23 @@
   <!-- ================= MANAGE ================= -->
   <div class="panel" id="manage">
     <div class="card">
+      <h3>AI-assisted parsing for unrecognized formats</h3>
+      <div class="card-sub">
+        Every parser above (CAS, Zerodha tradebook) runs entirely on this machine — nothing
+        leaves it. Enabling this setting adds one exception: files that don't match a known
+        format (a Motilal Oswal statement, an Angel One ledger, a CSV export, etc.) will have
+        their extracted text sent to Anthropic's API to identify and extract holdings or
+        transactions from them, since writing a dedicated parser for every possible broker
+        format isn't practical.
+      </div>
+      <div class="callout note" id="llmStatusNote" style="background:#eef2fb; border-left:4px solid var(--blue);">Checking status…</div>
+      <label style="display:flex; align-items:center; gap:10px; font-size:0.86rem; cursor:pointer;">
+        <input type="checkbox" id="llmToggle" style="width:16px; height:16px;">
+        Enable AI-assisted parsing for files no other parser recognizes
+      </label>
+      <div class="form-status" id="llmToggleStatus"></div>
+    </div>
+    <div class="card">
       <h3>Uploaded batches</h3>
       <div class="card-sub">Delete a batch to remove those holdings from the portfolio</div>
       <table>

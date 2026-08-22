@@ -23,7 +23,7 @@ import io
 import zipfile
 from typing import List
 
-from . import cas_parser, tradebook_parser, db, portfolio
+from . import cas_parser, tradebook_parser, llm_parser, db, portfolio
 
 JUNK_MARKERS = ("__MACOSX", ".DS_Store")
 
@@ -82,22 +82,94 @@ def process_tradebook(filename: str, file_bytes: bytes) -> dict:
     }
 
 
-def process_single_file(filename: str, file_bytes: bytes) -> dict:
+def process_llm_extracted(filename: str, file_bytes: bytes) -> dict:
+    """Fallback path for files the deterministic parsers don't recognize.
+    See llm_parser.py's module docstring for the privacy/opt-in model this
+    depends on — callers must check db.get_settings()['llm_parsing_enabled']
+    themselves before reaching this function."""
+    result = llm_parser.extract_financial_data(filename, file_bytes)
+    if result["error"]:
+        return {"filename": filename, "type": "llm_extracted", "ok": False, "error": result["error"]}
+
+    if not result["holdings"] and not result["transactions"]:
+        return {"filename": filename, "type": "llm_extracted", "ok": False,
+                "error": "AI-assisted parsing ran but found no recognizable holdings or "
+                         "transactions in this file." + (f" Notes: {'; '.join(result['notes'])}" if result["notes"] else "")}
+
+    batch_id = llm_parser.new_batch_id()
+    holdings_saved, transactions_saved = 0, 0
+    if result["holdings"]:
+        db.save_holdings(result["holdings"], source="llm_extracted", batch_id=batch_id, label=filename)
+        holdings_saved = len(result["holdings"])
+    if result["transactions"]:
+        transactions_saved = db.save_transactions(result["transactions"], batch_id=batch_id, source="llm_extracted")
+
+    warnings = [
+        "This file was parsed by AI-assisted extraction, not a verified deterministic parser — "
+        "double-check the figures against the source document before relying on them."
+    ]
+    if result["notes"]:
+        warnings.extend(result["notes"])
+
+    return {
+        "filename": filename, "type": "llm_extracted", "ok": True, "error": None,
+        "batch_id": batch_id, "document_type": result["document_type"],
+        "holdings_count": holdings_saved, "transactions_inserted": transactions_saved,
+        "chunks_processed": result["chunks_processed"], "warnings": warnings,
+    }
+
+
+def process_single_file(filename: str, file_bytes: bytes, llm_fallback_enabled: bool = False) -> dict:
     lower = filename.lower()
     if lower.endswith(".pdf"):
-        return process_cas(filename, file_bytes)
-    if lower.endswith(".xlsx"):
-        return process_tradebook(filename, file_bytes)
+        result = process_cas(filename, file_bytes)
+    elif lower.endswith(".xlsx"):
+        result = process_tradebook(filename, file_bytes)
+    else:
+        result = None
+
+    # Deterministic parser matched the extension and actually found something -> done.
+    if result and result["ok"]:
+        return result
+
+    # Extension unrecognized, or the deterministic parser matched the extension
+    # but couldn't make sense of the content (e.g. a .pdf that isn't an NSDL
+    # CAS, or a .xlsx that isn't a Zerodha tradebook) -> try the LLM fallback,
+    # but only if the person has explicitly opted in.
+    if llm_fallback_enabled and llm_parser.is_available():
+        llm_result = process_llm_extracted(filename, file_bytes)
+        if llm_result["ok"]:
+            return llm_result
+        # LLM fallback also failed — surface both errors so the person has
+        # the full picture rather than just the more recent failure.
+        if result:
+            llm_result["error"] = f"{result['error']} AI-assisted parsing also failed: {llm_result['error']}"
+        return llm_result
+
+    if result:
+        if not llm_fallback_enabled:
+            result["error"] += " (AI-assisted parsing could try this file, but it's currently disabled — see Settings.)"
+        return result
+
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "unknown"
-    return {"filename": filename, "type": "unsupported", "ok": False,
-            "error": f"Unsupported file type (.{ext}). Only .pdf (CAS) and .xlsx (tradebook) "
-                     "are supported — this file was skipped."}
+    error = f"Unsupported file type (.{ext})."
+    if llm_fallback_enabled and not llm_parser.is_available():
+        error += " AI-assisted parsing is enabled but not configured (ANTHROPIC_API_KEY missing)."
+    elif not llm_fallback_enabled:
+        error += " AI-assisted parsing could try this file, but it's currently disabled — see Settings."
+    return {"filename": filename, "type": "unsupported", "ok": False, "error": error}
 
 
 def expand_files(filename: str, file_bytes: bytes) -> List[tuple]:
     """Returns [(display_name, bytes), ...] — one entry for a plain file, or
-    one entry per supported file found inside a .zip."""
-    if filename.lower().endswith(".zip") or zipfile.is_zipfile(io.BytesIO(file_bytes)):
+    one entry per supported file found inside a .zip.
+
+    DECISION: zip detection is by filename extension only (`.zip`), not
+    content-sniffing via zipfile.is_zipfile() — .xlsx/.xlsm/.docx/.pptx files
+    are themselves zip archives internally (the OOXML format), so content
+    sniffing would incorrectly "expand" a single tradebook .xlsx into its
+    internal XML parts instead of treating it as one file."""
+    if filename.lower().endswith(".zip"):
         try:
             zf = zipfile.ZipFile(io.BytesIO(file_bytes))
         except zipfile.BadZipFile:
@@ -167,7 +239,11 @@ def process_upload(filename: str, file_bytes: bytes) -> dict:
     """Top-level entry point for POST /api/upload. Handles a single CAS PDF,
     a single tradebook XLSX, or a .zip containing any mix of both — expands
     a zip, processes every supported file inside, then reconciles cost basis
-    once across everything that was just added."""
+    once across everything that was just added. Files that don't match a
+    known deterministic format fall back to AI-assisted extraction only if
+    that's been explicitly enabled (db.get_settings())."""
+    llm_fallback_enabled = db.get_settings()["llm_parsing_enabled"]
+
     expanded = expand_files(filename, file_bytes)
     if not expanded:
         return {"files": [], "cost_basis": None, "summary": {
@@ -181,9 +257,9 @@ def process_upload(filename: str, file_bytes: bytes) -> dict:
             results.append({"filename": name, "type": "unknown", "ok": False,
                              "error": "Could not read this entry from the zip file."})
             continue
-        results.append(process_single_file(name, content))
+        results.append(process_single_file(name, content, llm_fallback_enabled=llm_fallback_enabled))
 
-    any_tradebook_ok = any(r["ok"] for r in results if r["type"] == "tradebook")
+    any_tradebook_ok = any(r["ok"] for r in results if r["type"] in ("tradebook", "llm_extracted"))
     cost_basis = reconcile_cost_basis() if any_tradebook_ok else None
 
     return {

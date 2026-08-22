@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from .modules import (
     db, cas_parser, portfolio, recommendation, projection,
-    benchmark, manual_assets, observations, formatting, tradebook_parser, upload_dispatch,
+    benchmark, manual_assets, observations, formatting, tradebook_parser, upload_dispatch, llm_parser,
 )
 
 app = FastAPI(title="Portfolio Snapshot API")
@@ -111,12 +111,39 @@ async def upload_any(file: UploadFile = File(...)):
     bundling any mix of both — one CAS plus several years of tradebooks,
     for example. Each file inside is parsed and ingested independently;
     cost-basis reconciliation (FIFO from tradebooks -> CAS holdings) runs
-    once at the end, across everything just added."""
+    once at the end, across everything just added. Files that don't match a
+    known format fall back to AI-assisted extraction only if that's been
+    explicitly enabled — see GET/POST /api/settings."""
     file_bytes = await file.read()
     result = upload_dispatch.process_upload(file.filename, file_bytes)
     if result["summary"].get("error"):
         raise HTTPException(400, result["summary"]["error"])
     return result
+
+
+@app.get("/api/settings")
+def get_settings():
+    settings = db.get_settings()
+    settings["llm_available"] = llm_parser.is_available()
+    return settings
+
+
+class SettingsIn(BaseModel):
+    llm_parsing_enabled: bool
+
+
+@app.post("/api/settings")
+def update_settings(body: SettingsIn):
+    if body.llm_parsing_enabled and not llm_parser.is_available():
+        raise HTTPException(
+            400,
+            "Can't enable AI-assisted parsing: ANTHROPIC_API_KEY isn't set on this machine "
+            "(or the 'anthropic' package isn't installed). Set the environment variable, "
+            "restart the server, and try again."
+        )
+    settings = db.set_llm_parsing_enabled(body.llm_parsing_enabled)
+    settings["llm_available"] = llm_parser.is_available()
+    return settings
 
 
 # --------------------------------------------------------------------------- #

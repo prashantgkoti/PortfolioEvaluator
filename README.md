@@ -23,6 +23,34 @@ your own CAS, refresh live prices, run scored verdicts, add manual holdings
 | Add US/unlisted/gold holdings | Not available | Full forms, live |
 | Equity cost basis | Never available (CAS doesn't carry it) | Real, FIFO-computed from an uploaded tradebook |
 
+## AI-assisted parsing for other formats
+
+Everything above (CAS parsing, tradebook parsing) runs entirely on your machine. There's
+now an **optional** fallback for formats this app doesn't have a dedicated parser for —
+Motilal Oswal statements, Angel One ledgers, CAMS/KFintech mutual fund statements, CSV
+exports, or anything else. When enabled, a file that doesn't match a known format has its
+extracted text sent to Anthropic's API, which identifies and extracts holdings or
+transactions from it.
+
+**This is off by default and requires explicit setup:**
+
+1. Set the `ANTHROPIC_API_KEY` environment variable on the machine running the backend
+   (never entered into the app itself, never stored in the database).
+2. Restart the server.
+3. Go to **Manage Uploads** in the app and toggle "Enable AI-assisted parsing" on.
+
+Once enabled, it only activates as a *fallback* — the deterministic CAS and tradebook
+parsers are always tried first, since they're free, fast, and already verified against real
+statements. The AI path only runs for files those can't make sense of, and every
+AI-extracted holding is tagged with a note to double-check it against the source document —
+treat it as a best-effort extraction, not a verified one.
+
+```powershell
+# Windows PowerShell — set for the current session
+$env:ANTHROPIC_API_KEY = "your-key-here"
+uv run uvicorn backend.main:app --reload --port 8000
+```
+
 ## Setup
 
 ```bash
@@ -78,7 +106,8 @@ All endpoints are under `/api/`. A few highlights:
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/upload` | POST (multipart) | Unified entry point — a CAS PDF, a tradebook .xlsx, or a .zip bundling any mix of both |
+| `/api/upload` | POST (multipart) | Unified entry point — a CAS PDF, a tradebook .xlsx, a .zip bundling either, or (if enabled) anything else via AI-assisted fallback |
+| `/api/settings` | GET / POST | Check/toggle AI-assisted parsing |
 | `/api/cas/upload` | POST (multipart) | Single-CAS convenience endpoint (same underlying logic as `/api/upload`) |
 | `/api/tradebook/upload` | POST (multipart) | Single-tradebook convenience endpoint, returns FIFO cost-basis reconciliation detail |
 | `/api/tradebook/positions` | GET | FIFO-computed positions (open + closed) across every uploaded trade |
