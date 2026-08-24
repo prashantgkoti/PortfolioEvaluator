@@ -71,6 +71,7 @@ async function init(){
   });
   ['sipSlider','retSlider','yrsSlider'].forEach(id=>document.getElementById(id).addEventListener('input', runProjection));
   document.getElementById('llmToggle').addEventListener('change', handleLlmToggle);
+  document.getElementById('resetBtn').addEventListener('click', handleReset);
 
   await loadPortfolio(false);
   await loadSettings();
@@ -111,6 +112,38 @@ async function handleLlmToggle(){
   }
 }
 
+// ============================================================================
+// Danger zone: full reset
+// ============================================================================
+async function handleReset(){
+  const input = document.getElementById('resetConfirmInput');
+  const statusEl = document.getElementById('resetStatus');
+  const btn = document.getElementById('resetBtn');
+  if(input.value !== 'DELETE ALL DATA'){
+    statusEl.textContent = 'Type the phrase exactly as shown to confirm.';
+    statusEl.className = 'form-status err';
+    return;
+  }
+  if(!confirm('This permanently deletes every holding, transaction, and batch. This cannot be undone. Continue?')) return;
+
+  btn.disabled = true;
+  statusEl.textContent = 'Wiping...';
+  statusEl.className = 'form-status';
+  try{
+    const result = await api('/api/reset', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({confirm: input.value})});
+    statusEl.textContent = `Done. Removed ${result.counts.holdings} holdings, ${result.counts.transactions} transactions, ${result.counts.batches} batches.`;
+    statusEl.className = 'form-status ok';
+    input.value = '';
+    await loadPortfolio(false);
+  }catch(e){
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'form-status err';
+  }finally{
+    btn.disabled = false;
+  }
+}
+
 async function handleUpload(){
   const fileInput = document.getElementById('casFile');
   const statusEl = document.getElementById('uploadStatus');
@@ -138,7 +171,7 @@ async function handleUpload(){
         result.files.map(f=>{
           const icon = f.ok ? '✓' : '✗';
           const detail = f.ok
-            ? (f.type==='cas' ? `${f.holdings_count} holdings` : f.type==='tradebook' ? `${f.transactions_inserted} trades` : 'OK')
+            ? (f.type==='cas' ? `${f.holdings_count} holdings` : (f.type==='tradebook'||f.type==='generic_tabular'||f.type==='llm_extracted') ? `${f.transactions_inserted||0} trades${f.holdings_count?`, ${f.holdings_count} holdings`:''}` : 'OK')
             : f.error;
           return `<tr><td>${f.filename}</td><td>${f.type}</td><td>${icon} ${detail}</td></tr>`;
         }).join('') + '</tbody></table>';

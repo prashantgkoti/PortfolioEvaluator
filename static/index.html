@@ -270,19 +270,19 @@
   <!-- ================= MANAGE ================= -->
   <div class="panel" id="manage">
     <div class="card">
-      <h3>AI-assisted parsing for unrecognized formats</h3>
+      <h3>How unfamiliar file formats are handled</h3>
       <div class="card-sub">
-        Every parser above (CAS, Zerodha tradebook) runs entirely on this machine — nothing
-        leaves it. Enabling this setting adds one exception: files that don't match a known
-        format (a Motilal Oswal statement, an Angel One ledger, a CSV export, etc.) will have
-        their extracted text sent to Anthropic's API to identify and extract holdings or
-        transactions from them, since writing a dedicated parser for every possible broker
-        format isn't practical.
+        Every upload goes through up to three tiers, cheapest and most reliable first:
       </div>
+      <ol style="font-size:0.85rem; color:var(--ink); line-height:1.9; padding-left:20px; margin:4px 0 14px;">
+        <li><b>Exact parsers</b> — NSDL CAS PDFs and Zerodha Console tradebooks. Verified against real statements. Always local.</li>
+        <li><b>Heuristic column matching</b> — for other .xlsx/.csv tradebook or ledger exports (Motilal Oswal, Angel One, etc.). Looks for recognizable columns (Symbol, ISIN, Date, Qty, Price, Buy/Sell) regardless of exact wording. Always local, no API key needed — this is why formats it hasn't seen before often still work.</li>
+        <li><b>AI-assisted extraction</b> — last resort for anything the first two tiers can't confidently parse. <b>Opt-in only</b>, and the one path that sends file content outside this machine.</li>
+      </ol>
       <div class="callout note" id="llmStatusNote" style="background:#eef2fb; border-left:4px solid var(--blue);">Checking status…</div>
       <label style="display:flex; align-items:center; gap:10px; font-size:0.86rem; cursor:pointer;">
         <input type="checkbox" id="llmToggle" style="width:16px; height:16px;">
-        Enable AI-assisted parsing for files no other parser recognizes
+        Enable AI-assisted parsing as a last resort for files the first two tiers can't handle
       </label>
       <div class="form-status" id="llmToggleStatus"></div>
     </div>
@@ -293,6 +293,18 @@
         <thead><tr><th>Label</th><th>Source</th><th>Uploaded</th><th></th></tr></thead>
         <tbody id="batchBody"></tbody>
       </table>
+    </div>
+    <div class="card" style="border-color:#f0c4c4;">
+      <h3 style="color:var(--red);">Danger zone</h3>
+      <div class="card-sub">
+        Permanently deletes every holding, transaction, trend point, and batch — a full fresh
+        start. Cannot be undone. Your AI-parsing preference is kept.
+      </div>
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <input type="text" id="resetConfirmInput" placeholder="Type: DELETE ALL DATA" style="padding:8px 10px; border:1px solid var(--border); border-radius:7px; font-size:0.84rem; min-width:220px;">
+        <button class="btn-primary" id="resetBtn" style="background:var(--red);">Wipe all data</button>
+      </div>
+      <div class="form-status" id="resetStatus"></div>
     </div>
   </div>
 

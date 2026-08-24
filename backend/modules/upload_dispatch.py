@@ -23,7 +23,7 @@ import io
 import zipfile
 from typing import List
 
-from . import cas_parser, tradebook_parser, llm_parser, db, portfolio
+from . import cas_parser, tradebook_parser, generic_tabular_parser, llm_parser, db, portfolio
 
 JUNK_MARKERS = ("__MACOSX", ".DS_Store")
 
@@ -82,6 +82,29 @@ def process_tradebook(filename: str, file_bytes: bytes) -> dict:
     }
 
 
+def process_generic_tabular(filename: str, file_bytes: bytes) -> dict:
+    result = generic_tabular_parser.parse_tabular_bytes(filename, file_bytes)
+    if result["error"]:
+        return {"filename": filename, "type": "generic_tabular", "ok": False, "error": result["error"]}
+    if not result["transactions"]:
+        return {"filename": filename, "type": "generic_tabular", "ok": False,
+                "error": "warnings" in result and result["warnings"] and result["warnings"][0]
+                         or "No transactions could be extracted."}
+
+    batch_id = generic_tabular_parser.new_batch_id()
+    inserted = db.save_transactions(result["transactions"], batch_id=batch_id, source="generic_tabular")
+
+    return {
+        "filename": filename, "type": "generic_tabular", "ok": True, "error": None,
+        "batch_id": batch_id, "transactions_found": len(result["transactions"]),
+        "transactions_inserted": inserted,
+        "transactions_skipped_duplicate": len(result["transactions"]) - inserted,
+        "columns_matched": result["columns_matched"],
+        "warnings": ["Parsed via heuristic column-matching, not a broker-specific verified "
+                     "parser — spot-check a few rows against the source file."] + result["warnings"],
+    }
+
+
 def process_llm_extracted(filename: str, file_bytes: bytes) -> dict:
     """Fallback path for files the deterministic parsers don't recognize.
     See llm_parser.py's module docstring for the privacy/opt-in model this
@@ -120,38 +143,54 @@ def process_llm_extracted(filename: str, file_bytes: bytes) -> dict:
 
 
 def process_single_file(filename: str, file_bytes: bytes, llm_fallback_enabled: bool = False) -> dict:
+    """Fallback chain, cheapest/most-verified first:
+      1. Format-specific deterministic parser matching the extension
+         (cas_parser for .pdf, tradebook_parser for .xlsx — exact,
+         verified against real statements)
+      2. Generic heuristic tabular parser (.xlsx/.xlsm/.csv/.tsv only) —
+         no API key needed, handles "reasonably standard" tradebook/ledger
+         layouts from other brokers via fuzzy column-name matching
+      3. LLM-assisted extraction (any file type) — opt-in only, last resort
+    Each tier is only tried if the previous one didn't produce a confident
+    result, and every tier's failure message is preserved so the final
+    error explains what was actually tried, not just the last attempt."""
     lower = filename.lower()
+    errors_seen = []
+
     if lower.endswith(".pdf"):
         result = process_cas(filename, file_bytes)
+        if result["ok"]:
+            return result
+        errors_seen.append(result["error"])
     elif lower.endswith(".xlsx"):
         result = process_tradebook(filename, file_bytes)
-    else:
-        result = None
+        if result["ok"]:
+            return result
+        errors_seen.append(result["error"])
 
-    # Deterministic parser matched the extension and actually found something -> done.
-    if result and result["ok"]:
-        return result
+    if lower.endswith((".xlsx", ".xlsm", ".csv", ".tsv")):
+        generic_result = process_generic_tabular(filename, file_bytes)
+        if generic_result["ok"]:
+            return generic_result
+        errors_seen.append(generic_result["error"])
 
-    # Extension unrecognized, or the deterministic parser matched the extension
-    # but couldn't make sense of the content (e.g. a .pdf that isn't an NSDL
-    # CAS, or a .xlsx that isn't a Zerodha tradebook) -> try the LLM fallback,
-    # but only if the person has explicitly opted in.
     if llm_fallback_enabled and llm_parser.is_available():
         llm_result = process_llm_extracted(filename, file_bytes)
         if llm_result["ok"]:
             return llm_result
-        # LLM fallback also failed — surface both errors so the person has
-        # the full picture rather than just the more recent failure.
-        if result:
-            llm_result["error"] = f"{result['error']} AI-assisted parsing also failed: {llm_result['error']}"
+        errors_seen.append(llm_result["error"])
+        llm_result["error"] = " | ".join(errors_seen)
         return llm_result
 
-    if result:
-        if not llm_fallback_enabled:
-            result["error"] += " (AI-assisted parsing could try this file, but it's currently disabled — see Settings.)"
-        return result
-
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "unknown"
+    if errors_seen:
+        error = " | ".join(errors_seen)
+        if not llm_fallback_enabled:
+            error += " (AI-assisted parsing could try this file as a last resort, but it's currently disabled — see Settings.)"
+        elif not llm_parser.is_available():
+            error += " (AI-assisted parsing is enabled but not configured — ANTHROPIC_API_KEY is missing.)"
+        return {"filename": filename, "type": "unrecognized", "ok": False, "error": error}
+
     error = f"Unsupported file type (.{ext})."
     if llm_fallback_enabled and not llm_parser.is_available():
         error += " AI-assisted parsing is enabled but not configured (ANTHROPIC_API_KEY missing)."
@@ -259,7 +298,7 @@ def process_upload(filename: str, file_bytes: bytes) -> dict:
             continue
         results.append(process_single_file(name, content, llm_fallback_enabled=llm_fallback_enabled))
 
-    any_tradebook_ok = any(r["ok"] for r in results if r["type"] in ("tradebook", "llm_extracted"))
+    any_tradebook_ok = any(r["ok"] for r in results if r["type"] in ("tradebook", "generic_tabular", "llm_extracted"))
     cost_basis = reconcile_cost_basis() if any_tradebook_ok else None
 
     return {

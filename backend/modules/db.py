@@ -441,3 +441,31 @@ def set_llm_parsing_enabled(enabled: bool) -> dict:
         return {"llm_parsing_enabled": bool(row.llm_parsing_enabled)}
     finally:
         session.close()
+
+
+# --------------------------------------------------------------------------- #
+# Full reset ("danger zone")
+# --------------------------------------------------------------------------- #
+
+def wipe_all_data() -> dict:
+    """Deletes every holding, batch, transaction, trend point, NPS snapshot,
+    and saved recommendation — a full fresh start. Deliberately does NOT
+    touch AppSettings (the LLM opt-in preference survives a wipe, since it's
+    a machine-level configuration choice, not portfolio data). After this
+    runs, the next upload starts a clean history; nothing before the wipe
+    is recoverable — the caller (API layer) is responsible for requiring
+    explicit confirmation before calling this."""
+    session = get_session()
+    try:
+        counts = {
+            "holdings": session.query(PortfolioHolding).delete(),
+            "batches": session.query(ImportBatch).delete(),
+            "transactions": session.query(Transaction).delete(),
+            "trend_points": session.query(TrendPoint).delete(),
+            "nps_snapshots": session.query(NPSSnapshot).delete(),
+            "recommendations": session.query(Recommendation).delete(),
+        }
+        session.commit()
+        return counts
+    finally:
+        session.close()

@@ -23,7 +23,8 @@ from pydantic import BaseModel
 
 from .modules import (
     db, cas_parser, portfolio, recommendation, projection,
-    benchmark, manual_assets, observations, formatting, tradebook_parser, upload_dispatch, llm_parser,
+    benchmark, manual_assets, observations, formatting, tradebook_parser,
+    upload_dispatch, llm_parser, generic_tabular_parser,
 )
 
 app = FastAPI(title="Portfolio Snapshot API")
@@ -297,6 +298,27 @@ def list_batches():
 def delete_batch(batch_id: str):
     db.delete_batch(batch_id)
     return {"deleted": batch_id}
+
+
+# --------------------------------------------------------------------------- #
+# Full reset ("danger zone")
+# --------------------------------------------------------------------------- #
+
+class ResetIn(BaseModel):
+    confirm: str
+
+
+@app.post("/api/reset")
+def reset_all_data(body: ResetIn):
+    """Wipes every holding, transaction, trend point, NPS snapshot, and
+    batch — a full fresh start. Requires the literal confirmation phrase
+    to guard against an accidental call; the frontend is expected to make
+    the person type it, not just click a button."""
+    if body.confirm != "DELETE ALL DATA":
+        raise HTTPException(400, "Confirmation phrase didn't match — nothing was deleted. "
+                                  "Type exactly: DELETE ALL DATA")
+    counts = db.wipe_all_data()
+    return {"wiped": True, "counts": counts}
 
 
 # --------------------------------------------------------------------------- #

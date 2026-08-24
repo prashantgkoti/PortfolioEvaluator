@@ -23,33 +23,49 @@ your own CAS, refresh live prices, run scored verdicts, add manual holdings
 | Add US/unlisted/gold holdings | Not available | Full forms, live |
 | Equity cost basis | Never available (CAS doesn't carry it) | Real, FIFO-computed from an uploaded tradebook |
 
-## AI-assisted parsing for other formats
+## Handling unfamiliar file formats
 
-Everything above (CAS parsing, tradebook parsing) runs entirely on your machine. There's
-now an **optional** fallback for formats this app doesn't have a dedicated parser for —
-Motilal Oswal statements, Angel One ledgers, CAMS/KFintech mutual fund statements, CSV
-exports, or anything else. When enabled, a file that doesn't match a known format has its
-extracted text sent to Anthropic's API, which identifies and extracts holdings or
-transactions from it.
+Every upload goes through up to three tiers, cheapest and most reliable first — **the
+first two never leave your machine**:
 
-**This is off by default and requires explicit setup:**
+1. **Exact parsers** — NSDL CAS PDFs and Zerodha Console tradebooks, verified against real
+   statements.
+2. **Heuristic column matching** — for other `.xlsx`/`.csv` tradebook or ledger exports
+   (Motilal Oswal, Angel One, and similar). Looks for recognizable columns (Symbol/Scrip,
+   ISIN, Date, Qty, Price, Buy/Sell) by fuzzy name matching rather than requiring an exact
+   template, so most reasonably-standard broker exports work without any extra setup —
+   no API key needed. Requires at least Symbol + Quantity + Price, plus a Date or Buy/Sell
+   column, before it trusts a match; otherwise it reports no confident match rather than
+   guessing.
+3. **AI-assisted extraction** — opt-in only (see below), last resort for anything the first
+   two tiers can't confidently parse.
+
+## AI-assisted parsing (opt-in, last resort)
+
+For files neither of the above can handle, there's an optional fallback that sends the
+file's extracted text to Anthropic's API for structured extraction. **This is the only path
+in the whole app that sends data outside your machine**, and it's off by default:
 
 1. Set the `ANTHROPIC_API_KEY` environment variable on the machine running the backend
    (never entered into the app itself, never stored in the database).
 2. Restart the server.
 3. Go to **Manage Uploads** in the app and toggle "Enable AI-assisted parsing" on.
 
-Once enabled, it only activates as a *fallback* — the deterministic CAS and tradebook
-parsers are always tried first, since they're free, fast, and already verified against real
-statements. The AI path only runs for files those can't make sense of, and every
-AI-extracted holding is tagged with a note to double-check it against the source document —
-treat it as a best-effort extraction, not a verified one.
+Every AI-extracted holding/transaction is tagged with a note to double-check it against the
+source document — treat it as best-effort, not verified.
 
 ```powershell
 # Windows PowerShell — set for the current session
 $env:ANTHROPIC_API_KEY = "your-key-here"
 uv run uvicorn backend.main:app --reload --port 8000
 ```
+
+## Starting fresh
+
+**Manage Uploads → Danger zone** lets you wipe every holding, transaction, trend point, and
+batch in one action (type `DELETE ALL DATA` to confirm — this can't be undone). Your
+AI-parsing preference is kept. After a wipe, the next file you upload starts a clean history;
+nothing is merged with what was deleted.
 
 ## Setup
 
@@ -108,6 +124,7 @@ All endpoints are under `/api/`. A few highlights:
 |---|---|---|
 | `/api/upload` | POST (multipart) | Unified entry point — a CAS PDF, a tradebook .xlsx, a .zip bundling either, or (if enabled) anything else via AI-assisted fallback |
 | `/api/settings` | GET / POST | Check/toggle AI-assisted parsing |
+| `/api/reset` | POST | Wipe all data (requires `{"confirm": "DELETE ALL DATA"}`) |
 | `/api/cas/upload` | POST (multipart) | Single-CAS convenience endpoint (same underlying logic as `/api/upload`) |
 | `/api/tradebook/upload` | POST (multipart) | Single-tradebook convenience endpoint, returns FIFO cost-basis reconciliation detail |
 | `/api/tradebook/positions` | GET | FIFO-computed positions (open + closed) across every uploaded trade |
