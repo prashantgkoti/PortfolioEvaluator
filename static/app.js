@@ -270,14 +270,14 @@ async function loadXirr(refresh){
   strip.innerHTML = `
     <div class="stat-chip"><div class="n" style="color:${portfolioXirr>=0?'var(--green)':'var(--red)'}">${portfolioXirr!=null ? (portfolioXirr>=0?'+':'')+portfolioXirr+'%' : '—'}</div><div class="l">portfolio XIRR</div></div>
     <div class="stat-chip"><div class="n">${data.positions.length}</div><div class="l">positions analyzed</div></div>
-    <div class="stat-chip"><div class="n">${liveCount}</div><div class="l">using live prices${liveCount===0 && refresh ? ' (none resolved — most raw broker symbols aren\\'t clean tickers)' : ''}</div></div>
+    <div class="stat-chip"><div class="n">${liveCount}</div><div class="l">using live prices${liveCount===0 && refresh ? ' (none resolved — most raw broker symbols are not clean tickers)' : ''}</div></div>
   `;
 
   document.getElementById('xirrBody').innerHTML = data.positions.map(p=>{
     const xirrCls = p.xirr_pct == null ? '' : (p.xirr_pct >= 0 ? 'gain' : 'loss');
     const ar = p.absolute_return ? p.absolute_return.return_pct : null;
     const arCls = ar == null ? '' : (ar >= 0 ? 'gain' : 'loss');
-    const heldLabel = p.under_one_year ? `${p.holding_days}d` : `${(p.holding_days/365).toFixed(1)}y`;
+    const heldLabel = p.holding_days == null ? '—' : (p.under_one_year ? `${p.holding_days}d` : `${(p.holding_days/365).toFixed(1)}y`);
     return `<tr><td>${p.symbol}</td><td>${p.asset_type||'—'}</td><td class="num">${p.quantity}</td>
       <td class="num ${xirrCls}">${p.xirr_pct!=null ? (p.xirr_pct>=0?'+':'')+p.xirr_pct+'%' : '—'}</td>
       <td class="num ${arCls}">${ar!=null ? (ar>=0?'+':'')+ar+'%' : '—'}</td>

@@ -330,13 +330,29 @@ def get_tradebook_xirr(refresh_prices: bool = Query(False)):
         position_xirr = xirr_calc.xirr(flows)
         abs_return = xirr_calc.absolute_return_pct(pos["transactions"], current_value)
 
-        holding_days = (today - dt.datetime.strptime(pos["transactions"][0]["trade_date"][:10], "%Y-%m-%d").date()).days
+        # DECISION: don't blindly trust transactions[0]'s date — a
+        # malformed/unparseable trade_date already sitting in the database
+        # (confirmed: pre-existing data from before a date-parsing bug fix,
+        # stored before the fix existed) previously crashed this entire
+        # endpoint for every position, not just the one with bad data.
+        # Scan for the first transaction with an actually-parseable date;
+        # if none exist, holding_days/under_one_year come back as None
+        # (unknown) instead of taking the whole request down.
+        holding_days = None
+        for t in pos["transactions"]:
+            try:
+                first_date = dt.datetime.strptime(t["trade_date"][:10], "%Y-%m-%d").date()
+                holding_days = (today - first_date).days
+                break
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+
         position_results.append({
             "symbol": pos["symbol"], "isin": pos["isin"], "asset_type": pos["asset_type"],
             "quantity": pos["quantity"], "avg_cost": pos["avg_cost"], "realized_pnl": pos["realized_pnl"],
             "xirr_pct": round(position_xirr * 100, 2) if position_xirr is not None else None,
             "absolute_return": abs_return, "used_live_price": used_live_price,
-            "holding_days": holding_days, "under_one_year": holding_days < 365,
+            "holding_days": holding_days, "under_one_year": holding_days < 365 if holding_days is not None else None,
         })
         all_portfolio_cashflows.extend(flows)
 
