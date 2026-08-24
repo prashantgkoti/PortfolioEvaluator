@@ -226,6 +226,13 @@ async function loadPortfolio(refresh){
   document.getElementById('tabs').style.display = hasHoldings ? 'flex' : 'none';
   document.getElementById('headerActions').style.display = hasHoldings ? 'block' : 'none';
 
+  if(hasHoldings){
+    document.getElementById('headerSub').textContent =
+      `${data.holdings.length} holdings · ${fmtCompact(data.total_value)} consolidated value · last updated ${new Date().toLocaleString('en-IN')}`;
+  } else {
+    document.getElementById('headerSub').textContent = 'Upload a CAS to get started — everything below is computed live.';
+  }
+
   if(!hasHoldings) return;
 
   renderKPIs(data);
