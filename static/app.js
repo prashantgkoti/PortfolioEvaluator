@@ -84,16 +84,17 @@ async function loadSettings(){
   const s = await api('/api/settings');
   const toggle = document.getElementById('llmToggle');
   const note = document.getElementById('llmStatusNote');
+  const providerName = s.llm_provider === 'gemini' ? "Google's Gemini" : s.llm_provider === 'anthropic' ? "Anthropic's Claude" : null;
   toggle.checked = s.llm_parsing_enabled;
   if(!s.llm_available){
     toggle.disabled = true;
-    note.textContent = 'Not available: ANTHROPIC_API_KEY isn\'t set on this machine (or the "anthropic" package isn\'t installed). Set the environment variable and restart the server to enable this.';
+    note.textContent = 'Not available: no API key found. Set GEMINI_API_KEY (or GOOGLE_API_KEY — free tier available) for Gemini, or ANTHROPIC_API_KEY for Claude, on this machine and restart the server.';
   } else if(s.llm_parsing_enabled){
     toggle.disabled = false;
-    note.textContent = 'Enabled — unrecognized files will be sent to Anthropic\'s API for extraction.';
+    note.textContent = `Enabled — unrecognized files will be sent to ${providerName}'s API for extraction.`;
   } else {
     toggle.disabled = false;
-    note.textContent = 'API key detected. Currently disabled — unrecognized files are skipped rather than sent anywhere.';
+    note.textContent = `${providerName} API key detected. Currently disabled — unrecognized files are skipped rather than sent anywhere.`;
   }
 }
 

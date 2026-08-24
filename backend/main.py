@@ -126,6 +126,7 @@ async def upload_any(file: UploadFile = File(...)):
 def get_settings():
     settings = db.get_settings()
     settings["llm_available"] = llm_parser.is_available()
+    settings["llm_provider"] = llm_parser.get_provider()
     return settings
 
 
@@ -138,12 +139,13 @@ def update_settings(body: SettingsIn):
     if body.llm_parsing_enabled and not llm_parser.is_available():
         raise HTTPException(
             400,
-            "Can't enable AI-assisted parsing: ANTHROPIC_API_KEY isn't set on this machine "
-            "(or the 'anthropic' package isn't installed). Set the environment variable, "
-            "restart the server, and try again."
+            "Can't enable AI-assisted parsing: no API key found. Set GEMINI_API_KEY (or "
+            "GOOGLE_API_KEY) for Gemini, or ANTHROPIC_API_KEY for Claude, on this machine, "
+            "then restart the server and try again."
         )
     settings = db.set_llm_parsing_enabled(body.llm_parsing_enabled)
     settings["llm_available"] = llm_parser.is_available()
+    settings["llm_provider"] = llm_parser.get_provider()
     return settings
 
 

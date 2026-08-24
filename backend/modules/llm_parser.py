@@ -1,7 +1,8 @@
 """
 llm_parser.py — Fallback extraction for transaction/holdings reports that
 don't match any of the deterministic parsers (cas_parser.py's NSDL layouts,
-tradebook_parser.py's Zerodha Console format). Instead of hardcoding a new
+tradebook_parser.py's Zerodha Console format) or the generic heuristic
+tabular parser (generic_tabular_parser.py). Instead of hardcoding a new
 parser per broker/format, this sends the document's extracted text to an
 LLM and asks it to return structured holdings or transactions matching a
 fixed schema — so a Motilal Oswal statement, an Angel One ledger, a CAMS/
@@ -13,24 +14,34 @@ IMPORTANT — READ BEFORE ENABLING
 ============================================================================
 This is the ONE place in the app that sends financial document content
 outside the local machine. Every other parser in this codebase (cas_parser,
-tradebook_parser) runs entirely locally — nothing leaves the machine.
-This module calls the Anthropic API with the extracted text of whatever
-file it's given, which may contain account numbers, holdings, and personal
-identifying information present in the source document.
+tradebook_parser, generic_tabular_parser) runs entirely locally — nothing
+leaves the machine. This module calls an LLM API with the extracted text of
+whatever file it's given, which may contain account numbers, holdings, and
+personal identifying information present in the source document.
 
 Because of that, this path is:
   - OFF by default (see db.AppSettings.llm_parsing_enabled) — the person
     running the app must explicitly enable it.
-  - Used only as a FALLBACK, after the deterministic parsers have already
-    failed to recognize the file — known formats never take this path.
-  - Dependent on an ANTHROPIC_API_KEY environment variable being set on the
-    machine running the backend. It is never stored in the database, never
-    accepted from the frontend, and never logged.
+  - Used only as a LAST RESORT, after the deterministic parsers AND the
+    generic heuristic tabular parser have already failed to make sense of
+    the file — most real-world tradebook/ledger exports never reach here.
+  - Dependent on an API key for whichever provider is configured. Keys are
+    read from environment variables only — never stored in the database,
+    never accepted from the frontend, and never logged.
 ============================================================================
 
-DECISION: extraction uses Claude's tool-use (forced tool_choice) rather than
-asking for JSON in prose, since a forced tool call is validated against a
-schema by the API itself and is far more reliable to parse than hoping a
+DECISION: supports two providers — Anthropic (Claude) and Google (Gemini) —
+selected automatically by whichever API key is present, or explicitly via
+LLM_PROVIDER=anthropic|gemini. Gemini is checked first when both keys are
+absent-vs-present ties would matter, since Gemini's free tier makes it the
+more accessible default for someone without a paid API budget; either
+provider is otherwise treated identically by the rest of this module — both
+return the same normalized shape before anything touches the database.
+
+DECISION: extraction uses forced structured output rather than asking for
+JSON in prose — Claude's tool-use (forced tool_choice) and Gemini's native
+response_schema/response_mime_type both validate the response against a
+schema at the API level, which is far more reliable to parse than hoping a
 free-text response contains well-formed JSON.
 
 DECISION: documents are chunked at ~12,000 characters with the LLM invoked
@@ -46,9 +57,12 @@ fabricated numbers entering the portfolio silently.
 
 Untested against a live API call in this build — the extraction pipeline
 (text extraction, chunking, prompt/schema construction, response
-validation, and merge/dedup logic) is exercised with a mocked LLM response,
-but the actual network round-trip to Anthropic's API has not been verified
-end-to-end and should be checked with a real API key before relying on it.
+validation, and merge/dedup logic) is exercised with a mocked LLM response
+for both providers, but the actual network round-trip has only been
+verified for Anthropic (using an intentionally invalid key, to confirm the
+request goes out and errors are handled cleanly) — the Gemini path has not
+been exercised against the live API at all and should be checked with a
+real key before relying on it.
 """
 from __future__ import annotations
 
@@ -59,19 +73,39 @@ import re
 import uuid
 from typing import List, Optional
 
-DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 CHUNK_CHARS = 12_000
 MAX_CHUNKS = 15  # hard cap so one enormous file can't trigger runaway API spend
 
 
+def get_provider() -> Optional[str]:
+    """Returns 'anthropic', 'gemini', or None. Explicit LLM_PROVIDER env var
+    wins if set; otherwise auto-detects by whichever API key is present,
+    checking Gemini first since its free tier is the more accessible
+    default for someone without a paid API budget."""
+    explicit = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    if explicit in ("anthropic", "gemini"):
+        return explicit
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        return "gemini"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    return None
+
+
 def is_available() -> bool:
-    """True only if the anthropic package is installed AND an API key is
-    configured. Does not check the opt-in setting — callers check that
-    separately (db.get_settings()['llm_parsing_enabled'])."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    """True only if a provider is selectable (see get_provider()) AND its
+    SDK package is installed. Does not check the opt-in setting — callers
+    check that separately (db.get_settings()['llm_parsing_enabled'])."""
+    provider = get_provider()
+    if provider is None:
         return False
     try:
-        import anthropic  # noqa: F401
+        if provider == "anthropic":
+            import anthropic  # noqa: F401
+        else:
+            from google import genai  # noqa: F401
         return True
     except ImportError:
         return False
@@ -199,15 +233,61 @@ Rules:
 - Distinguish mutual funds (folio numbers, NAV, AMC names) from direct equities (NSE/BSE symbols, ISIN starting with the issuer's equity code) where possible.
 - Always call the record_financial_data tool with your findings, even if both arrays end up empty."""
 
+# Gemini's response_schema uses a narrower OpenAPI-3.0-style dialect than
+# Anthropic's tool input_schema — notably "nullable": true instead of
+# "type": ["string", "null"] — so this is a distinct, explicit schema rather
+# than a shared/converted one, to avoid subtle conversion bugs.
+GEMINI_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "document_type": {"type": "string", "enum": ["holdings", "transactions", "mixed", "unknown"]},
+        "holdings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "symbol": {"type": "string", "nullable": True},
+                    "isin": {"type": "string", "nullable": True},
+                    "asset_type": {"type": "string", "enum": ["stock", "mutual_fund", "etf", "other"]},
+                    "quantity": {"type": "number", "nullable": True},
+                    "avg_cost": {"type": "number", "nullable": True},
+                    "current_price": {"type": "number", "nullable": True},
+                    "current_value": {"type": "number", "nullable": True},
+                    "currency": {"type": "string"},
+                },
+                "required": ["name", "asset_type"],
+            },
+        },
+        "transactions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "isin": {"type": "string", "nullable": True},
+                    "trade_date": {"type": "string"},
+                    "trade_type": {"type": "string", "enum": ["buy", "sell"]},
+                    "quantity": {"type": "number"},
+                    "price": {"type": "number"},
+                },
+                "required": ["symbol", "trade_date", "trade_type", "quantity", "price"],
+            },
+        },
+        "notes": {"type": "string"},
+    },
+    "required": ["document_type", "holdings", "transactions"],
+}
 
-def _call_llm(text_chunk: str, filename: str) -> dict:
+
+def _call_anthropic(text_chunk: str, filename: str) -> dict:
     """Returns {"document_type", "holdings", "transactions", "notes", "error"}."""
     import anthropic
 
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
     try:
         response = client.messages.create(
-            model=DEFAULT_MODEL,
+            model=ANTHROPIC_MODEL,
             max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=[EXTRACTION_TOOL],
@@ -236,8 +316,61 @@ def _call_llm(text_chunk: str, filename: str) -> dict:
                 "notes": data.get("notes", ""),
                 "error": None,
             }
-
     return {"error": "The model didn't return structured data as expected."}
+
+
+def _call_gemini(text_chunk: str, filename: str) -> dict:
+    """Returns {"document_type", "holdings", "transactions", "notes", "error"}."""
+    from google import genai
+    from google.genai import types
+    from google.genai.errors import ClientError, ServerError
+
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    client = genai.Client(api_key=api_key)
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=f"Filename: {filename}\n\nDocument excerpt:\n\n{text_chunk}",
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=GEMINI_RESPONSE_SCHEMA,
+                max_output_tokens=4096,
+            ),
+        )
+    except ClientError as e:
+        if e.code in (401, 403):
+            return {"error": "GEMINI_API_KEY is set but was rejected by the API — check it's valid."}
+        if e.code == 429:
+            return {"error": "Gemini API rate limit hit — try again shortly."}
+        return {"error": f"Gemini API error ({e.code}): {e}"}
+    except ServerError as e:
+        return {"error": f"Gemini API had a server-side error: {e}"}
+    except Exception as e:
+        return {"error": f"LLM extraction failed: {e}"}
+
+    try:
+        data = json.loads(response.text)
+    except (json.JSONDecodeError, AttributeError, TypeError) as e:
+        return {"error": f"Gemini didn't return valid structured JSON: {e}"}
+
+    return {
+        "document_type": data.get("document_type", "unknown"),
+        "holdings": data.get("holdings", []) or [],
+        "transactions": data.get("transactions", []) or [],
+        "notes": data.get("notes", ""),
+        "error": None,
+    }
+
+
+def _call_llm(text_chunk: str, filename: str) -> dict:
+    """Dispatches to whichever provider get_provider() selects."""
+    provider = get_provider()
+    if provider == "gemini":
+        return _call_gemini(text_chunk, filename)
+    if provider == "anthropic":
+        return _call_anthropic(text_chunk, filename)
+    return {"error": "No LLM provider configured (set GEMINI_API_KEY or ANTHROPIC_API_KEY)."}
 
 
 _ISIN_RE = re.compile(r"^IN[A-Z0-9]{10}$")

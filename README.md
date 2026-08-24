@@ -43,11 +43,18 @@ first two never leave your machine**:
 ## AI-assisted parsing (opt-in, last resort)
 
 For files neither of the above can handle, there's an optional fallback that sends the
-file's extracted text to Anthropic's API for structured extraction. **This is the only path
-in the whole app that sends data outside your machine**, and it's off by default:
+file's extracted text to an LLM for structured extraction. **This is the only path in the
+whole app that sends data outside your machine**, and it's off by default. Two providers
+are supported — pick whichever key you have:
 
-1. Set the `ANTHROPIC_API_KEY` environment variable on the machine running the backend
-   (never entered into the app itself, never stored in the database).
+- **Google Gemini** (has a free tier): set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`)
+- **Anthropic Claude**: set `ANTHROPIC_API_KEY`
+
+If both happen to be set, Gemini is used by default (override with `LLM_PROVIDER=anthropic`
+or `LLM_PROVIDER=gemini`).
+
+1. Set the relevant environment variable on the machine running the backend (never entered
+   into the app itself, never stored in the database).
 2. Restart the server.
 3. Go to **Manage Uploads** in the app and toggle "Enable AI-assisted parsing" on.
 
@@ -55,8 +62,8 @@ Every AI-extracted holding/transaction is tagged with a note to double-check it 
 source document — treat it as best-effort, not verified.
 
 ```powershell
-# Windows PowerShell — set for the current session
-$env:ANTHROPIC_API_KEY = "your-key-here"
+# Windows PowerShell — set for the current session (Gemini, free tier)
+$env:GEMINI_API_KEY = "your-key-here"
 uv run uvicorn backend.main:app --reload --port 8000
 ```
 
