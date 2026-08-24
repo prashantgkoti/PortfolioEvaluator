@@ -220,20 +220,28 @@ async function loadPortfolio(refresh){
   if(refresh){ refreshBtn.disabled = false; refreshBtn.textContent = '↻ Refresh live prices'; }
 
   const hasHoldings = data.holdings && data.holdings.length > 0;
-  document.getElementById('uploadCard').style.marginTop = hasHoldings ? '0' : '-28px';
-  document.getElementById('uploadCardTitle').textContent = hasHoldings ? 'Add more statements' : 'Upload your statements';
+  // has_any_data covers transaction-only uploads too (e.g. tradebooks with no
+  // CAS yet) -- these have zero "holdings" rows but real data the person needs
+  // to reach (Manage Uploads, Tradebook positions), so tabs/upload-card
+  // visibility is gated on this, not on holdings alone.
+  const hasData = data.has_any_data || hasHoldings;
+  document.getElementById('uploadCard').style.marginTop = hasData ? '0' : '-28px';
+  document.getElementById('uploadCardTitle').textContent = hasData ? 'Add more statements' : 'Upload your statements';
   document.getElementById('kpiRow').style.display = hasHoldings ? 'grid' : 'none';
-  document.getElementById('tabs').style.display = hasHoldings ? 'flex' : 'none';
-  document.getElementById('headerActions').style.display = hasHoldings ? 'block' : 'none';
+  document.getElementById('tabs').style.display = hasData ? 'flex' : 'none';
+  document.getElementById('headerActions').style.display = hasData ? 'block' : 'none';
 
   if(hasHoldings){
     document.getElementById('headerSub').textContent =
       `${data.holdings.length} holdings · ${fmtCompact(data.total_value)} consolidated value · last updated ${new Date().toLocaleString('en-IN')}`;
+  } else if(hasData){
+    document.getElementById('headerSub').textContent =
+      `No holdings yet — ${data.transaction_count} transaction(s) on file from tradebook uploads. Upload a CAS to see portfolio value and allocation, or check the Tradebook tab for what's there now.`;
   } else {
     document.getElementById('headerSub').textContent = 'Upload a CAS to get started — everything below is computed live.';
   }
 
-  if(!hasHoldings) return;
+  if(!hasData) return;
 
   renderKPIs(data);
   renderDonut(data.asset_class);
@@ -322,6 +330,11 @@ async function loadObservations(){
 // ============================================================================
 function renderDonut(assetClass){
   const palette = {'stock':'#2e5fa8','mutual_fund':'#1a9169','nps':'#6a4c93','gold':'#c98a2c','unlisted_equity':'#8a97ac','other':'#b23a48'};
+  if(!assetClass || assetClass.length === 0){
+    document.getElementById('allocSub').textContent = 'No holdings yet — upload a CAS to see allocation, or check the Tradebook tab for uploaded trade history.';
+    if(charts.donut){ charts.donut.destroy(); charts.donut = null; }
+    return;
+  }
   const total = assetClass.reduce((s,a)=>s+a.value,0);
   document.getElementById('allocSub').textContent = `${fmtCompact(total)} across all uploaded and added holdings`;
   if(!CHARTS_AVAILABLE) return;

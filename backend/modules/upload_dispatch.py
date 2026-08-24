@@ -71,7 +71,7 @@ def process_tradebook(filename: str, file_bytes: bytes) -> dict:
         return {"filename": filename, "type": "tradebook", "ok": False, "error": result["error"]}
 
     batch_id = tradebook_parser.new_batch_id()
-    inserted = db.save_transactions(result["transactions"], batch_id=batch_id)
+    inserted = db.save_transactions(result["transactions"], batch_id=batch_id, label=filename)
 
     return {
         "filename": filename, "type": "tradebook", "ok": True, "error": None,
@@ -92,7 +92,7 @@ def process_generic_tabular(filename: str, file_bytes: bytes) -> dict:
                          or "No transactions could be extracted."}
 
     batch_id = generic_tabular_parser.new_batch_id()
-    inserted = db.save_transactions(result["transactions"], batch_id=batch_id, source="generic_tabular")
+    inserted = db.save_transactions(result["transactions"], batch_id=batch_id, source="generic_tabular", label=filename)
 
     return {
         "filename": filename, "type": "generic_tabular", "ok": True, "error": None,
@@ -125,7 +125,7 @@ def process_llm_extracted(filename: str, file_bytes: bytes) -> dict:
         db.save_holdings(result["holdings"], source="llm_extracted", batch_id=batch_id, label=filename)
         holdings_saved = len(result["holdings"])
     if result["transactions"]:
-        transactions_saved = db.save_transactions(result["transactions"], batch_id=batch_id, source="llm_extracted")
+        transactions_saved = db.save_transactions(result["transactions"], batch_id=batch_id, source="llm_extracted", label=filename)
 
     warnings = [
         "This file was parsed by AI-assisted extraction, not a verified deterministic parser — "

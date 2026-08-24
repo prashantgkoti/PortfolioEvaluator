@@ -175,9 +175,11 @@ async def upload_cas(file: UploadFile = File(...)):
 @app.get("/api/portfolio")
 def get_portfolio(refresh: bool = Query(False)):
     df, usdinr = _holdings_dataframe(refresh=refresh)
+    transaction_count = len(db.get_all_transactions())
     if df.empty:
         return {"total_value": 0, "total_cost": 0, "holdings": [], "asset_class": [],
-                "rupee_buckets": [], "usdinr_rate": usdinr}
+                "rupee_buckets": [], "usdinr_rate": usdinr,
+                "transaction_count": transaction_count, "has_any_data": transaction_count > 0}
 
     total_value = float(df["value_inr"].fillna(0).sum())
     total_cost = float(df["cost_inr"].fillna(0).sum())
@@ -197,6 +199,8 @@ def get_portfolio(refresh: bool = Query(False)):
         "total_cost": round(total_cost, 2),
         "total_gain": round(total_value - total_cost, 2),
         "usdinr_rate": round(usdinr, 2),
+        "transaction_count": transaction_count,
+        "has_any_data": True,
         "asset_class": asset_class,
         "rupee_buckets": rupee_buckets,
         "holdings": holdings,

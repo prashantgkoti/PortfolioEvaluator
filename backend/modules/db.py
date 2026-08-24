@@ -228,12 +228,24 @@ def get_all_latest_recommendations() -> List[Recommendation]:
 # Holdings helpers
 # --------------------------------------------------------------------------- #
 
+def _ensure_batch(session, batch_id: str, source: str, label: str = "") -> None:
+    """Creates an ImportBatch row only if one doesn't already exist for this
+    batch_id. Needed because a single logical upload can call both
+    save_holdings() and save_transactions() with the same batch_id (e.g.
+    AI-extracted files that yield both holdings and transactions) — without
+    this guard, each call would insert its own ImportBatch row, showing up
+    as two separate entries in Manage Uploads for what's really one upload."""
+    existing = session.query(ImportBatch).filter(ImportBatch.batch_id == batch_id).first()
+    if not existing:
+        session.add(ImportBatch(batch_id=batch_id, source=source, label=label))
+
+
 def save_holdings(holdings: List[dict], source: str, batch_id: str, label: str = "") -> None:
     """Persists a batch of holdings, tagging them with a batch_id so a later
     re-upload/re-entry can replace just that batch without touching others."""
     session = get_session()
     try:
-        session.add(ImportBatch(batch_id=batch_id, source=source, label=label))
+        _ensure_batch(session, batch_id, source, label)
         for h in holdings:
             h = dict(h)
             h["source"] = source
@@ -272,9 +284,17 @@ def get_holdings_by_source(source: str) -> List[PortfolioHolding]:
 
 
 def delete_batch(batch_id: str) -> None:
+    """Removes every row tagged with this batch_id across all tables — not
+    just holdings. Previously this only cleared PortfolioHolding and
+    ImportBatch, silently leaving Transaction/TrendPoint/NPSSnapshot rows
+    from that same upload orphaned in the database even after "deleting"
+    the batch from the UI."""
     session = get_session()
     try:
         session.query(PortfolioHolding).filter(PortfolioHolding.batch_id == batch_id).delete()
+        session.query(Transaction).filter(Transaction.batch_id == batch_id).delete()
+        session.query(TrendPoint).filter(TrendPoint.batch_id == batch_id).delete()
+        session.query(NPSSnapshot).filter(NPSSnapshot.batch_id == batch_id).delete()
         session.query(ImportBatch).filter(ImportBatch.batch_id == batch_id).delete()
         session.commit()
     finally:
@@ -361,12 +381,18 @@ def get_latest_nps() -> Optional[dict]:
 # Transaction (tradebook) helpers
 # --------------------------------------------------------------------------- #
 
-def save_transactions(transactions: list, batch_id: str, source: str = "zerodha_tradebook") -> int:
+def save_transactions(transactions: list, batch_id: str, source: str = "zerodha_tradebook", label: str = "") -> int:
     """Inserts transactions, skipping any whose Trade ID already exists in the
     DB (covers re-uploading the same file, or overlapping date ranges across
-    separate exports). Returns the count actually inserted."""
+    separate exports). Also creates an ImportBatch row so this upload shows
+    up in Manage Uploads — previously only save_holdings() did this, so a
+    transaction-only upload (no CAS, e.g. tradebooks with no matching
+    holdings) was invisible in the batch list with no way to see or delete
+    it, even though the data was really there. Returns the count actually
+    inserted."""
     session = get_session()
     try:
+        _ensure_batch(session, batch_id, source, label)
         existing_ids = {row[0] for row in session.query(Transaction.trade_id).filter(
             Transaction.trade_id.isnot(None)).all()}
         inserted = 0
