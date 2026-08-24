@@ -175,11 +175,18 @@
       <div class="card-sub">
         NSDL/CDSL CAS statements never carry purchase cost for demat equities — only current
         value. A broker tradebook is the actual trade-by-trade record, so FIFO cost basis
-        computed from it is exact for whatever period you upload. Currently supports
-        <b>Zerodha Console</b> tradebook exports (.xlsx). Upload one from the box at the top
-        of the page (a single file, or a .zip with several years bundled together — Zerodha
-        caps a single export at 365 days, so multi-year history needs multiple files).
+        computed from it is exact for whatever period you upload. Handles Zerodha Console
+        exports exactly, and most other brokers' tradebook/ledger exports via heuristic
+        column matching. Upload from the box at the top of the page (a single file, or a
+        .zip with several bundled together — brokers cap a single export at 365 days, so
+        multi-year history usually needs multiple files).
       </div>
+      <div class="stat-strip" id="tradebookStrip"></div>
+    </div>
+    <div class="card">
+      <h3>Open positions by value</h3>
+      <div class="card-sub" id="tradebookChartSub">Computed from cost basis (live prices shown once a matching CAS holding is present).</div>
+      <div class="chart-box"><canvas id="tradebookBarChart"></canvas></div>
     </div>
     <div class="card">
       <h3>FIFO positions from uploaded trade history</h3>

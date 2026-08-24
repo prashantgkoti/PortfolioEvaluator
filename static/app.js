@@ -42,7 +42,7 @@ if (CHARTS_AVAILABLE) {
 // State
 // ============================================================================
 let PORTFOLIO = null;
-let charts = {donut:null, trend:null, mfBar:null, proj:null};
+let charts = {donut:null, trend:null, mfBar:null, proj:null, tradebookBar:null};
 
 async function api(path, opts){
   const res = await fetch(path, opts);
@@ -187,6 +187,14 @@ async function handleUpload(){
 
     document.getElementById('uploadCardTitle').textContent = 'Add more statements';
     await loadPortfolio(false);
+
+    // Land somewhere useful: if this upload added trades but no holdings
+    // (e.g. tradebook-only, no CAS uploaded), jump to the Tradebook tab
+    // instead of leaving the person on an empty Allocation tab.
+    if(s.total_transactions_added > 0 && s.total_holdings_added === 0){
+      const tradebookTabBtn = document.querySelector('.tab-btn[data-tab="tradebook"]');
+      if(tradebookTabBtn) tradebookTabBtn.click();
+    }
   }catch(e){
     statusEl.textContent = 'Error: ' + e.message;
   }finally{
@@ -199,12 +207,54 @@ async function handleUpload(){
 // ============================================================================
 async function loadTradebookPositions(){
   const data = await api('/api/tradebook/positions');
-  document.getElementById('tradebookPositionsBody').innerHTML = data.positions.map(p=>{
+  const positions = data.positions;
+
+  const openPositions = positions.filter(p => p.quantity > 0);
+  const closedPositions = positions.filter(p => p.quantity === 0);
+  const totalInvested = openPositions.reduce((s,p) => s + p.quantity * (p.avg_cost||0), 0);
+  const totalRealized = positions.reduce((s,p) => s + (p.realized_pnl||0), 0);
+
+  document.getElementById('tradebookStrip').innerHTML = `
+    <div class="stat-chip"><div class="n">${openPositions.length}</div><div class="l">open positions</div></div>
+    <div class="stat-chip"><div class="n">${closedPositions.length}</div><div class="l">fully exited positions</div></div>
+    <div class="stat-chip"><div class="n">${fmtCompact(totalInvested)}</div><div class="l">invested in open positions (at cost)</div></div>
+    <div class="stat-chip"><div class="n" style="color:${totalRealized>=0?'var(--green)':'var(--red)'}">${totalRealized>=0?'+':''}${fmtCompact(totalRealized)}</div><div class="l">total realized P&amp;L</div></div>
+  `;
+
+  document.getElementById('tradebookPositionsBody').innerHTML = positions.map(p=>{
     const pnlCls = p.realized_pnl > 0 ? 'gain' : (p.realized_pnl < 0 ? 'loss' : '');
     return `<tr><td>${p.symbol}</td><td class="num">${p.quantity}</td>
       <td class="num">${p.avg_cost!=null ? indianGrouped(p.avg_cost) : '—'}</td>
       <td class="num ${pnlCls}">${p.realized_pnl ? (p.realized_pnl>=0?'+':'')+indianGrouped(p.realized_pnl) : '—'}</td></tr>`;
   }).join('');
+
+  const topOpen = [...openPositions]
+    .map(p => ({...p, value: p.quantity * (p.avg_cost||0)}))
+    .sort((a,b) => b.value - a.value)
+    .slice(0, 15);
+
+  const ctx = document.getElementById('tradebookBarChart');
+  if(charts.tradebookBar) charts.tradebookBar.destroy();
+  if(!CHARTS_AVAILABLE || topOpen.length === 0){
+    document.getElementById('tradebookChartSub').textContent = topOpen.length === 0
+      ? 'No open positions yet — every uploaded trade has been fully exited, or nothing parsed cleanly.'
+      : 'Chart library unavailable — see the table below instead.';
+    return;
+  }
+  document.getElementById('tradebookChartSub').textContent =
+    `Top ${topOpen.length} open position(s) by cost-basis value (quantity × avg. cost from trade history).`;
+  charts.tradebookBar = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: topOpen.map(p => p.symbol.length > 24 ? p.symbol.slice(0,22)+'…' : p.symbol),
+      datasets: [{ data: topOpen.map(p => p.value), backgroundColor: '#1b3b6f' }],
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ` ${fmtCompact(c.raw)}` } } },
+      scales: { x: { ticks: { callback: v => fmtTick(v) } } },
+    },
+  });
 }
 
 // ============================================================================
@@ -331,7 +381,7 @@ async function loadObservations(){
 function renderDonut(assetClass){
   const palette = {'stock':'#2e5fa8','mutual_fund':'#1a9169','nps':'#6a4c93','gold':'#c98a2c','unlisted_equity':'#8a97ac','other':'#b23a48'};
   if(!assetClass || assetClass.length === 0){
-    document.getElementById('allocSub').textContent = 'No holdings yet — upload a CAS to see allocation, or check the Tradebook tab for uploaded trade history.';
+    document.getElementById('allocSub').innerHTML = 'No holdings yet — upload a CAS to see allocation, or <a href="#" onclick="document.querySelector(\'.tab-btn[data-tab=tradebook]\').click(); return false;">see your uploaded trade history in the Tradebook tab</a>.';
     if(charts.donut){ charts.donut.destroy(); charts.donut = null; }
     return;
   }
