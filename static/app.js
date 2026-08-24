@@ -258,6 +258,60 @@ async function loadTradebookPositions(){
 }
 
 // ============================================================================
+// XIRR + absolute return
+// ============================================================================
+async function loadXirr(refresh){
+  const strip = document.getElementById('xirrStrip');
+  if(refresh) strip.innerHTML = '<div class="stat-chip"><div class="n">…</div><div class="l">refreshing with live prices</div></div>';
+  const data = await api(`/api/tradebook/xirr${refresh ? '?refresh_prices=true' : ''}`);
+
+  const portfolioXirr = data.portfolio_xirr_pct;
+  const liveCount = data.positions.filter(p => p.used_live_price).length;
+  strip.innerHTML = `
+    <div class="stat-chip"><div class="n" style="color:${portfolioXirr>=0?'var(--green)':'var(--red)'}">${portfolioXirr!=null ? (portfolioXirr>=0?'+':'')+portfolioXirr+'%' : '—'}</div><div class="l">portfolio XIRR</div></div>
+    <div class="stat-chip"><div class="n">${data.positions.length}</div><div class="l">positions analyzed</div></div>
+    <div class="stat-chip"><div class="n">${liveCount}</div><div class="l">using live prices${liveCount===0 && refresh ? ' (none resolved — most raw broker symbols aren\\'t clean tickers)' : ''}</div></div>
+  `;
+
+  document.getElementById('xirrBody').innerHTML = data.positions.map(p=>{
+    const xirrCls = p.xirr_pct == null ? '' : (p.xirr_pct >= 0 ? 'gain' : 'loss');
+    const ar = p.absolute_return ? p.absolute_return.return_pct : null;
+    const arCls = ar == null ? '' : (ar >= 0 ? 'gain' : 'loss');
+    const heldLabel = p.under_one_year ? `${p.holding_days}d` : `${(p.holding_days/365).toFixed(1)}y`;
+    return `<tr><td>${p.symbol}</td><td>${p.asset_type||'—'}</td><td class="num">${p.quantity}</td>
+      <td class="num ${xirrCls}">${p.xirr_pct!=null ? (p.xirr_pct>=0?'+':'')+p.xirr_pct+'%' : '—'}</td>
+      <td class="num ${arCls}">${ar!=null ? (ar>=0?'+':'')+ar+'%' : '—'}</td>
+      <td class="num">${heldLabel}${p.under_one_year?' <span style="color:var(--amber);">*</span>':''}</td></tr>`;
+  }).join('');
+}
+
+// ============================================================================
+// Raw transaction history
+// ============================================================================
+async function loadTransactions(){
+  const data = await api('/api/transactions');
+  const buys = data.transactions.filter(t => t.trade_type === 'buy').length;
+  const sells = data.transactions.filter(t => t.trade_type === 'sell').length;
+  document.getElementById('transactionsStrip').innerHTML = `
+    <div class="stat-chip"><div class="n">${data.count}</div><div class="l">total transactions</div></div>
+    <div class="stat-chip"><div class="n">${buys}</div><div class="l">buys</div></div>
+    <div class="stat-chip"><div class="n">${sells}</div><div class="l">sells</div></div>
+  `;
+  // most recent first; cap the rendered rows for performance on large histories
+  const sorted = [...data.transactions].reverse().slice(0, 500);
+  document.getElementById('transactionsBody').innerHTML = sorted.map(t=>{
+    const sideCls = t.trade_type === 'buy' ? '' : 'gain';
+    return `<tr><td>${(t.trade_date||'—').slice(0,10)}</td><td>${t.symbol}</td><td>${t.asset_type||'—'}</td>
+      <td class="${sideCls}" style="text-transform:capitalize;">${t.trade_type}</td>
+      <td class="num">${t.quantity}</td><td class="num">${indianGrouped(t.price)}</td>
+      <td class="num">${indianGrouped(t.quantity*t.price)}</td></tr>`;
+  }).join('');
+  if(data.count > 500){
+    document.getElementById('transactionsBody').innerHTML += `<tr><td colspan="7" style="text-align:center; color:var(--ink-faint); padding:14px;">Showing the 500 most recent of ${data.count} transactions.</td></tr>`;
+  }
+}
+
+// ============================================================================
 // Load + render portfolio
 // ============================================================================
 async function loadPortfolio(refresh){
@@ -302,6 +356,8 @@ async function loadPortfolio(refresh){
   loadTrendAndNps(data);
   loadObservations();
   loadTradebookPositions();
+  loadXirr(false);
+  loadTransactions();
   runProjection();
 }
 

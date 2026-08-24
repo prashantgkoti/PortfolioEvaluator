@@ -139,9 +139,10 @@ class Transaction(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     batch_id = Column(String, index=True)
-    source = Column(String)       # "zerodha_tradebook" | "llm_extracted"
+    source = Column(String)       # "zerodha_tradebook" | "generic_tabular" | "llm_extracted"
     symbol = Column(String)
     isin = Column(String, index=True)
+    asset_type = Column(String)   # "stock" | "etf" | "mutual_fund" — see asset_classifier.py
     trade_date = Column(String)   # ISO date string, e.g. "2020-02-11"
     exchange = Column(String)
     segment = Column(String)
@@ -166,6 +167,27 @@ class AppSettings(Base):
 
 def init_db():
     Base.metadata.create_all(engine)
+    _migrate_add_missing_columns()
+
+
+def _migrate_add_missing_columns():
+    """create_all() only creates tables that don't exist yet — it never
+    alters an existing table's columns. Someone with real data already
+    uploaded (this app's whole point) would otherwise hit 'no such column'
+    errors the moment a new field like Transaction.asset_type is added in
+    an update, with no way forward except wiping their database. This runs
+    a minimal, additive-only migration: for each model, add any column that
+    the ORM expects but the actual SQLite table doesn't have yet. New
+    columns land as NULL for existing rows — never destructive."""
+    from sqlalchemy import inspect, text
+    inspector = inspect(engine)
+    if "transactions" not in inspector.get_table_names():
+        return  # fresh DB, create_all() already built it with every column
+    existing_cols = {c["name"] for c in inspector.get_columns("transactions")}
+    if "asset_type" not in existing_cols:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE transactions ADD COLUMN asset_type VARCHAR"))
+            conn.commit()
 
 
 def get_session():
@@ -414,9 +436,9 @@ def get_all_transactions() -> list:
     session = get_session()
     try:
         rows = session.query(Transaction).order_by(Transaction.trade_date, Transaction.executed_at).all()
-        return [{"symbol": r.symbol, "isin": r.isin, "trade_date": r.trade_date,
+        return [{"symbol": r.symbol, "isin": r.isin, "asset_type": r.asset_type, "trade_date": r.trade_date,
                  "trade_type": r.trade_type, "quantity": r.quantity, "price": r.price,
-                 "exchange": r.exchange, "executed_at": r.executed_at} for r in rows]
+                 "exchange": r.exchange, "executed_at": r.executed_at, "trade_id": r.trade_id} for r in rows]
     finally:
         session.close()
 

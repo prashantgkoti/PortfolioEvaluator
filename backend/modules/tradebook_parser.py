@@ -35,6 +35,8 @@ from typing import List
 
 import openpyxl
 
+from . import asset_classifier
+
 
 def parse_tradebook_bytes(file_bytes: bytes) -> dict:
     """Returns {"transactions": [...], "warnings": [...], "error": str|None,
@@ -83,9 +85,12 @@ def parse_tradebook_bytes(file_bytes: bytes) -> dict:
         if not row or get(row, "Symbol") is None:
             continue
         try:
+            symbol = str(get(row, "Symbol")).strip()
+            isin = str(get(row, "ISIN")).strip() if get(row, "ISIN") else None
             transactions.append({
-                "symbol": str(get(row, "Symbol")).strip(),
-                "isin": str(get(row, "ISIN")).strip() if get(row, "ISIN") else None,
+                "symbol": symbol,
+                "isin": isin,
+                "asset_type": asset_classifier.classify(isin, symbol),
                 "trade_date": str(get(row, "Trade Date")),
                 "exchange": get(row, "Exchange"),
                 "segment": get(row, "Segment"),
@@ -110,33 +115,57 @@ def parse_tradebook_bytes(file_bytes: bytes) -> dict:
 
 def compute_fifo_positions(transactions: List[dict]) -> dict:
     """Walks all transactions in date order and returns current net positions
-    per ISIN: {isin: {symbol, isin, quantity, avg_cost, realized_pnl}}.
-    Fully exited positions (net quantity == 0) are still included, with
-    avg_cost=None, so realized P&L on closed positions remains visible."""
-    by_isin: dict = {}
+    per instrument: {key: {symbol, isin, asset_type, quantity, avg_cost,
+    realized_pnl}}. Grouped by ISIN when available, falling back to the
+    symbol string when it isn't — some real broker exports (confirmed: an
+    Angel One-style trade history report) have no ISIN column at all, and
+    grouping strictly by ISIN would silently drop every one of those
+    transactions from analysis entirely, contradicting the basic
+    requirement that every recorded transaction — including a stock bought
+    and fully sold — actually gets analyzed, not just stored. Fully exited
+    positions (net quantity == 0) are still included, with avg_cost=None,
+    so realized P&L on closed positions remains visible."""
+    by_key: dict = {}
     for t in transactions:
-        if t.get("isin"):
-            by_isin.setdefault(t["isin"], []).append(t)
+        key = t.get("isin") or t.get("symbol")
+        if key:
+            by_key.setdefault(key, []).append(t)
 
     positions = {}
-    for isin, trades in by_isin.items():
+    for key, trades in by_key.items():
         trades_sorted = sorted(trades, key=lambda t: (t["trade_date"], t.get("executed_at") or ""))
         lots = deque()  # [quantity_remaining, price] per open buy lot, oldest first
         realized_pnl = 0.0
         symbol = trades_sorted[0]["symbol"]
+        isin = trades_sorted[0].get("isin")
+        asset_type = trades_sorted[0].get("asset_type") or "stock"
 
+        # DECISION: each transaction gets a "matched_quantity" — for buys,
+        # always the full quantity (every buy is real capital going in,
+        # regardless of what's later sold). For sells, only the portion
+        # actually matched against a known open lot. A sell whose quantity
+        # exceeds what's actually available in the lot queue (confirmed on
+        # real data: a position with several same-day sell rows totalling
+        # more than any known prior buy) means shares predate the uploaded
+        # trade history — that unmatched excess is excluded from
+        # matched_quantity so XIRR cash-flow construction doesn't treat a
+        # phantom, never-purchased sell as a real cash inflow.
+        cashflow_txns = []
         for t in trades_sorted:
             qty, price = t["quantity"], t["price"]
             if t["trade_type"] == "buy":
                 lots.append([qty, price])
+                cashflow_txns.append({**t, "matched_quantity": qty})
             elif t["trade_type"] == "sell":
                 remaining = qty
+                matched_total = 0.0
                 while remaining > 1e-9 and lots:
                     lot_qty, lot_price = lots[0]
                     matched = min(lot_qty, remaining)
                     realized_pnl += matched * (price - lot_price)
                     lots[0][0] -= matched
                     remaining -= matched
+                    matched_total += matched
                     if lots[0][0] <= 1e-9:
                         lots.popleft()
                 # If `remaining` is still >0 here, sells exceed known buys in the
@@ -144,16 +173,18 @@ def compute_fifo_positions(transactions: List[dict]) -> dict:
                 # range, or transferred in from another broker) — that excess is
                 # simply not matched against any known cost, and ignored rather
                 # than driving the position negative.
+                cashflow_txns.append({**t, "matched_quantity": matched_total})
 
         total_qty = sum(l[0] for l in lots)
         if total_qty > 1e-6:
             total_cost = sum(l[0] * l[1] for l in lots)
-            positions[isin] = {"symbol": symbol, "isin": isin, "quantity": round(total_qty, 4),
-                                "avg_cost": round(total_cost / total_qty, 4),
-                                "realized_pnl": round(realized_pnl, 2)}
+            positions[key] = {"symbol": symbol, "isin": isin, "asset_type": asset_type,
+                               "quantity": round(total_qty, 4), "avg_cost": round(total_cost / total_qty, 4),
+                               "realized_pnl": round(realized_pnl, 2), "transactions": cashflow_txns}
         elif abs(realized_pnl) > 1e-6:
-            positions[isin] = {"symbol": symbol, "isin": isin, "quantity": 0.0, "avg_cost": None,
-                                "realized_pnl": round(realized_pnl, 2)}
+            positions[key] = {"symbol": symbol, "isin": isin, "asset_type": asset_type,
+                               "quantity": 0.0, "avg_cost": None,
+                               "realized_pnl": round(realized_pnl, 2), "transactions": cashflow_txns}
 
     return positions
 

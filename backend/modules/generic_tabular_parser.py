@@ -58,9 +58,26 @@ import io
 import re
 import uuid
 import datetime as dt
+import hashlib
 from typing import List, Optional
 
 import openpyxl
+
+from . import asset_classifier
+
+
+def _synthetic_trade_id(symbol: str, isin: Optional[str], trade_date: str,
+                         trade_type: str, quantity: float, price: float) -> str:
+    """Broker exports without their own Trade ID (confirmed: real Motilal
+    Oswal/Angel One-style exports) would otherwise be undeduplicated —
+    db.save_transactions() keys its duplicate check on trade_id, so with
+    trade_id=None the dedup check is silently bypassed and re-uploading the
+    same file re-inserts every row as a fresh duplicate (confirmed: a
+    real re-upload test doubled 84 transactions). A deterministic hash of
+    the fields that together identify a specific trade gives every parser
+    a stable ID to dedupe against, without needing a native one."""
+    raw = f"{symbol}|{isin or ''}|{trade_date}|{trade_type}|{quantity}|{price}"
+    return "synthetic_" + hashlib.md5(raw.encode()).hexdigest()[:16]
 
 # --------------------------------------------------------------------------- #
 # Column synonym groups — case-insensitive, punctuation/whitespace-normalized
@@ -160,12 +177,24 @@ def _parse_date(value) -> Optional[str]:
     if isinstance(value, (dt.date, dt.datetime)):
         return value.strftime("%Y-%m-%d")
     s = str(value).strip()
-    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%b-%Y", "%d %b %Y", "%m/%d/%Y"):
-        try:
-            return dt.datetime.strptime(s, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return s if s else None  # keep the raw string rather than silently dropping the row
+    # Strip a trailing time component ("01/07/2026 00:00:00" -> "01/07/2026")
+    # before matching against date-only formats — a real export (confirmed)
+    # writes dates as plain strings with a zeroed-out time suffix, which none
+    # of the date-only formats below would otherwise match.
+    date_part = s.split(" ")[0] if " " in s else s
+    for candidate in (date_part, s):
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%b-%Y", "%d %b %Y", "%m/%d/%Y"):
+            try:
+                return dt.datetime.strptime(candidate, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+    # DECISION: previously fell back to returning the raw, unparsed string
+    # here — but every downstream consumer (XIRR cash-flow dates, FIFO
+    # chronological sort) assumes ISO format and would silently misbehave
+    # or crash on a raw string instead of failing loudly. Returning None
+    # instead means the row is correctly skipped (and counted in the
+    # "skipped" warning) rather than corrupting a computation downstream.
+    return None
 
 
 def _parse_trade_type(value) -> Optional[str]:
@@ -280,9 +309,11 @@ def parse_tabular_bytes(filename: str, file_bytes: bytes) -> dict:
             isin = None
 
         transactions.append({
-            "symbol": symbol, "isin": isin, "trade_date": trade_date,
+            "symbol": symbol, "isin": isin, "asset_type": asset_classifier.classify(isin, symbol),
+            "trade_date": trade_date,
             "exchange": None, "segment": None, "trade_type": trade_type,
-            "quantity": qty, "price": price, "trade_id": None,
+            "quantity": qty, "price": price,
+            "trade_id": _synthetic_trade_id(symbol, isin, trade_date, trade_type, qty, price),
             "order_id": None, "executed_at": None,
         })
 

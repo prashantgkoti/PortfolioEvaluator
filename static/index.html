@@ -72,6 +72,7 @@
     <button class="tab-btn" data-tab="observations">Observations</button>
     <button class="tab-btn" data-tab="verdicts">Verdicts</button>
     <button class="tab-btn" data-tab="tradebook">Tradebook</button>
+    <button class="tab-btn" data-tab="transactions">Transactions</button>
     <button class="tab-btn" data-tab="projection">Growth Projection</button>
     <button class="tab-btn" data-tab="add">Add Holdings</button>
     <button class="tab-btn" data-tab="manage">Manage Uploads</button>
@@ -189,11 +190,51 @@
       <div class="chart-box"><canvas id="tradebookBarChart"></canvas></div>
     </div>
     <div class="card">
+      <h3>Returns — XIRR and absolute return</h3>
+      <div class="card-sub">
+        XIRR annualizes your actual cash-flow timeline (see formula and rationale below the
+        table). It's mathematically valid for any holding period, but annualizing a short
+        holding can look extreme — so absolute return (un-annualized, total gain ÷ invested)
+        is always shown alongside it, especially useful for anything under a year.
+        <button class="btn-ghost" style="margin-top:8px; color:var(--navy-2); border-color:var(--navy-2);" onclick="loadXirr(true)">↻ Refresh with live prices</button>
+      </div>
+      <div class="stat-strip" id="xirrStrip"></div>
+      <table>
+        <thead><tr><th>Symbol</th><th>Type</th><th class="num">Qty</th><th class="num">XIRR</th><th class="num">Absolute return</th><th class="num">Held</th></tr></thead>
+        <tbody id="xirrBody"></tbody>
+      </table>
+      <p style="font-size:0.76rem; color:var(--ink-faint); margin-top:10px;">
+        <b>Formula:</b> XIRR finds the rate r solving 0 = Σ CFᵢ / (1+r)^((dᵢ−d₀)/365) across every
+        real cash flow (buys negative, sells positive, plus a notional "sell today" for anything
+        still held) on its actual date — solved iteratively (Newton-Raphson), the same method
+        Excel's own XIRR() uses. "—" means XIRR couldn't be computed (e.g. a same-day buy-and-sell
+        has zero elapsed time, so no annualized rate is mathematically defined) — absolute return
+        is still shown in that case.
+      </p>
+    </div>
+    <div class="card">
       <h3>FIFO positions from uploaded trade history</h3>
       <div class="card-sub">Open positions show computed cost basis; fully-exited positions show realized P&amp;L instead.</div>
       <table>
         <thead><tr><th>Symbol</th><th class="num">Qty (from history)</th><th class="num">Avg cost (₹)</th><th class="num">Realized P&amp;L (₹)</th></tr></thead>
         <tbody id="tradebookPositionsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ================= TRANSACTIONS ================= -->
+  <div class="panel" id="transactions">
+    <div class="card">
+      <h3>Full transaction history</h3>
+      <div class="card-sub">
+        Every individual buy and sell ever uploaded — including both legs of a position that
+        was fully bought and sold, not netted away. This is the raw record; the Tradebook tab
+        shows the FIFO-aggregated view computed from it.
+      </div>
+      <div class="stat-strip" id="transactionsStrip"></div>
+      <table>
+        <thead><tr><th>Date</th><th>Symbol</th><th>Type</th><th>Side</th><th class="num">Qty</th><th class="num">Price (₹)</th><th class="num">Value (₹)</th></tr></thead>
+        <tbody id="transactionsBody"></tbody>
       </table>
     </div>
   </div>

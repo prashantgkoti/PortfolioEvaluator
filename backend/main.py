@@ -13,6 +13,7 @@ Then open: http://localhost:8000
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 from typing import Optional
 
@@ -24,7 +25,7 @@ from pydantic import BaseModel
 from .modules import (
     db, cas_parser, portfolio, recommendation, projection,
     benchmark, manual_assets, observations, formatting, tradebook_parser,
-    upload_dispatch, llm_parser, generic_tabular_parser,
+    upload_dispatch, llm_parser, generic_tabular_parser, xirr_calc,
 )
 
 app = FastAPI(title="Portfolio Snapshot API")
@@ -274,7 +275,76 @@ def get_tradebook_positions():
     to see realized P&L on fully-exited positions."""
     all_txns = db.get_all_transactions()
     positions = tradebook_parser.compute_fifo_positions(all_txns)
-    return {"positions": sorted(positions.values(), key=lambda p: p["symbol"])}
+    lean = [{k: v for k, v in p.items() if k != "transactions"} for p in positions.values()]
+    return {"positions": sorted(lean, key=lambda p: p["symbol"])}
+
+
+@app.get("/api/transactions")
+def get_transactions():
+    """The raw transaction list — every individual buy and sell ever
+    uploaded, including both legs of a position that was fully bought and
+    sold, not netted or summarized. Complements /api/tradebook/positions,
+    which shows the FIFO-aggregated view."""
+    txns = db.get_all_transactions()
+    return {"transactions": txns, "count": len(txns)}
+
+
+@app.get("/api/tradebook/xirr")
+def get_tradebook_xirr(refresh_prices: bool = Query(False)):
+    """Computes portfolio-level and per-position XIRR from actual
+    transaction cash flows (see xirr_calc.py for the formula), plus a plain
+    absolute-return-% for every position regardless of whether XIRR could
+    be computed — short holdings and same-day round-trips can make XIRR
+    undefined or hard to interpret even though absolute return still is.
+    For open positions, current value uses a live price if the symbol
+    resolves to a tradeable ticker (best-effort — most raw broker-export
+    symbol strings won't); otherwise falls back to cost basis, which
+    understates true return and is flagged per-position via
+    `used_live_price`."""
+    all_txns = db.get_all_transactions()
+    positions = tradebook_parser.compute_fifo_positions(all_txns)
+    if not positions:
+        return {"portfolio_xirr": None, "positions": []}
+
+    from .modules import data_fetch
+    today = dt.date.today()
+    position_results = []
+    all_portfolio_cashflows = []
+
+    for key, pos in positions.items():
+        current_value = None
+        used_live_price = False
+        if pos["quantity"] > 0:
+            if refresh_prices:
+                # best-effort: most raw broker-export symbol strings won't
+                # resolve to a real ticker, so a failure here is expected
+                # and falls through to the cost-basis approximation below.
+                price = data_fetch.get_current_price(pos["symbol"], "IN")
+                if price is not None:
+                    current_value = price * pos["quantity"]
+                    used_live_price = True
+            if current_value is None:
+                current_value = pos["quantity"] * (pos["avg_cost"] or 0)
+
+        flows = xirr_calc.build_position_cashflows(pos["transactions"], current_value, today)
+        position_xirr = xirr_calc.xirr(flows)
+        abs_return = xirr_calc.absolute_return_pct(pos["transactions"], current_value)
+
+        holding_days = (today - dt.datetime.strptime(pos["transactions"][0]["trade_date"][:10], "%Y-%m-%d").date()).days
+        position_results.append({
+            "symbol": pos["symbol"], "isin": pos["isin"], "asset_type": pos["asset_type"],
+            "quantity": pos["quantity"], "avg_cost": pos["avg_cost"], "realized_pnl": pos["realized_pnl"],
+            "xirr_pct": round(position_xirr * 100, 2) if position_xirr is not None else None,
+            "absolute_return": abs_return, "used_live_price": used_live_price,
+            "holding_days": holding_days, "under_one_year": holding_days < 365,
+        })
+        all_portfolio_cashflows.extend(flows)
+
+    portfolio_xirr = xirr_calc.xirr(all_portfolio_cashflows)
+    return {
+        "portfolio_xirr_pct": round(portfolio_xirr * 100, 2) if portfolio_xirr is not None else None,
+        "positions": sorted(position_results, key=lambda p: -(p["quantity"] * (p["avg_cost"] or 0))),
+    }
 
 
 @app.get("/api/observations")

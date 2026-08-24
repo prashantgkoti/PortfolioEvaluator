@@ -71,7 +71,10 @@ import json
 import os
 import re
 import uuid
+import hashlib
 from typing import List, Optional
+
+from . import asset_classifier
 
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
@@ -391,6 +394,14 @@ def _normalize_holding(h: dict) -> Optional[dict]:
     }
 
 
+def _synthetic_trade_id(symbol: str, isin, trade_date: str, trade_type: str, quantity: float, price: float) -> str:
+    """See generic_tabular_parser.py's identical helper for why this exists —
+    AI-extracted transactions have no native trade ID either, and would
+    otherwise silently bypass duplicate detection on re-upload."""
+    raw = f"{symbol}|{isin or ''}|{trade_date}|{trade_type}|{quantity}|{price}"
+    return "synthetic_" + hashlib.md5(raw.encode()).hexdigest()[:16]
+
+
 def _normalize_transaction(t: dict) -> Optional[dict]:
     if not t.get("symbol") or not t.get("trade_date") or t.get("trade_type") not in ("buy", "sell"):
         return None
@@ -400,10 +411,13 @@ def _normalize_transaction(t: dict) -> Optional[dict]:
     if isin and not _ISIN_RE.match(isin):
         isin = None
     return {
-        "symbol": t["symbol"], "isin": isin, "trade_date": str(t["trade_date"]),
+        "symbol": t["symbol"], "isin": isin, "asset_type": asset_classifier.classify(isin, t["symbol"]),
+        "trade_date": str(t["trade_date"]),
         "exchange": None, "segment": None, "trade_type": t["trade_type"],
         "quantity": float(t["quantity"]), "price": float(t["price"]),
-        "trade_id": None, "order_id": None, "executed_at": None,
+        "trade_id": _synthetic_trade_id(t["symbol"], isin, str(t["trade_date"]), t["trade_type"],
+                                         float(t["quantity"]), float(t["price"])),
+        "order_id": None, "executed_at": None,
     }
 
 
